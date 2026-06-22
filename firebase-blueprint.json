@@ -1,0 +1,39 @@
+{
+  "entities": {
+    "user_profiles": {
+      "title": "User Profile",
+      "description": "Information about verified PML/PPL users",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Authenticating user unique identifier"
+        },
+        "email": {
+          "type": "string",
+          "description": "User email address"
+        },
+        "name": {
+          "type": "string",
+          "description": "User human name"
+        },
+        "role": {
+          "type": "string",
+          "enum": ["PML", "PPL", "admin"],
+          "description": "User business role"
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "Registration server timestamp"
+        }
+      },
+      "required": ["uid", "email", "name", "role", "createdAt"]
+    }
+  },
+  "firestore": {
+    "users/{userId}": {
+      "schema": "user_profiles",
+      "description": "User profiles of monitoring staff"
+    }
+  }
+}

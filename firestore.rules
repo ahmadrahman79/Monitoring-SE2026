@@ -1,0 +1,71 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Global Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Primitive Definitions and Helpers
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isAdmin() {
+      return isSignedIn() && (
+        request.auth.token.email == 'digitalofficer79@gmail.com' ||
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    // Entity-Specific Validation Helper
+    function isValidUserProfile(data) {
+      return data.keys().hasAll(['uid', 'email', 'name', 'role', 'createdAt'])
+          && data.keys().size() == 5
+          && data.uid is string && data.uid.size() <= 128
+          && data.email is string && data.email.size() <= 256
+          && data.name is string && data.name.size() <= 256
+          && data.role is string && (data.role == 'PML' || data.role == 'PPL' || data.role == 'admin')
+          && data.uid == request.auth.uid;
+    }
+
+    // User Resource Match block
+    match /users/{userId} {
+      allow read: if isVerifiedUser() && (userId == request.auth.uid || isAdmin());
+      
+      allow create: if isVerifiedUser() 
+                    && isValidId(userId) 
+                    && userId == request.auth.uid 
+                    && isValidUserProfile(incoming()) 
+                    && incoming().createdAt == request.time;
+      
+      allow update: if isVerifiedUser() 
+                    && isValidId(userId) 
+                    && userId == request.auth.uid 
+                    && isValidUserProfile(incoming()) 
+                    && incoming().createdAt == existing().createdAt
+                    && (
+                      incoming().diff(existing()).affectedKeys().hasOnly(['name', 'role'])
+                    );
+                    
+      allow delete: if isAdmin();
+    }
+  }
+}

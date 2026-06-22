@@ -1,0 +1,8 @@
+{
+  "name": "Monitoring Progres Lapangan SE2026 v2",
+  "description": "Dashboard monitoring progres harian PML dan PPL dari Google Sheets",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
