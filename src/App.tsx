@@ -260,11 +260,11 @@ export default function App() {
     fetchSheetData();
   }, []);
 
-  // Set up auto-refresh timer (60 seconds)
+  // Set up auto-refresh timer (30 minutes)
   useEffect(() => {
     const interval = setInterval(() => {
       fetchSheetData(true);
-    }, 60000);
+    }, 1800000);
     return () => clearInterval(interval);
   }, []);
 
@@ -1238,7 +1238,7 @@ export default function App() {
             </table>
           </div>
           <div className="bg-slate-50 p-3 border-t border-slate-150 text-[10px] text-slate-400 font-bold uppercase tracking-wider flex justify-between items-center">
-            <span>Sinkronisasi Data Maksimal: Aktif (Mundur Otomatis 60s)</span>
+            <span>Sinkronisasi Data Maksimal: Aktif (Mundur Otomatis 30m)</span>
             <span>Total Catatan: {processedRecords.length} / {parsedData.table3Calculated.length}</span>
           </div>
         </div>
@@ -1256,7 +1256,7 @@ export default function App() {
         </div>
         <div className="flex items-center gap-1.5">
           <span className="w-2.5 h-2.5 bg-green-500 rounded-full animate-pulse"></span>
-          <span>Otomasi Sync: <b className="text-green-400 font-bold text-[9px] uppercase tracking-wider">AKTIF (60s)</b></span>
+          <span>Otomasi Sync: <b className="text-green-400 font-bold text-[9px] uppercase tracking-wider">AKTIF (30m)</b></span>
         </div>
       </footer>
 
