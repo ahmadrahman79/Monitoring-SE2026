@@ -16,6 +16,7 @@ import {
   Sheet,
   LogOut,
   Github,
+  Calendar,
   LineChart as LucideLineChart
 } from 'lucide-react';
 import { 
@@ -45,6 +46,33 @@ function getCurrentWIB(): Date {
   const now = new Date();
   const utc = now.getTime() + now.getTimezoneOffset() * 60000;
   return new Date(utc + (3600000 * 7));
+}
+
+// Calculate the elapsed days of data collection.
+// June 22, 2026 is Day 7, so the start of data collection is June 16, 2026.
+function getCurrentDayOfPendataan(): number {
+  const startDate = new Date(2026, 5, 16); // 16 Juni 2026
+  const today = getCurrentWIB();
+  // Reset time fields to compare exact calendar UTC days
+  const utcStart = Date.UTC(startDate.getFullYear(), startDate.getMonth(), startDate.getDate());
+  const utcToday = Date.UTC(today.getFullYear(), today.getMonth(), today.getDate());
+  const diffDays = Math.floor((utcToday - utcStart) / (1000 * 60 * 60 * 24));
+  const elapsed = diffDays + 1;
+  return elapsed >= 7 ? elapsed : 7; // As instructed, June 22 is Day 7, minimum is 7.
+}
+
+// Calculate precise remaining days to Kabupaten Mempawah target buffer deadline (August 15, 2026)
+function getRemainingDaysToMempawahDeadline(): number {
+  const today = getCurrentWIB();
+  today.setHours(0,0,0,0);
+  
+  const targetDate = new Date(2026, 7, 15); // 15 Agustus 2026 (7 is August in 0-indexed JS date month representation)
+  targetDate.setHours(0,0,0,0);
+  
+  const diffTime = targetDate.getTime() - today.getTime();
+  const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+  
+  return diffDays > 0 ? diffDays : 1;
 }
 
 // Helper to get active dynamic Indonesian date string with 23:59 WIB daily cutoff
@@ -167,10 +195,48 @@ export default function App() {
   const [selectedPpl, setSelectedPpl] = useState<string>('ALL');
   const [selectedDate, setSelectedDate] = useState<string>('ALL');
   const [searchQuery, setSearchQuery] = useState<string>('');
+  const [selectedTablePml, setSelectedTablePml] = useState<string>('ALL');
+  const [bottomTablePage, setBottomTablePage] = useState<number>(1);
+  const [dailyLogPage, setDailyLogPage] = useState<number>(1);
+  const [targetTrackerPpl, setTargetTrackerPpl] = useState<string>('');
+  const [localPplFilter, setLocalPplFilter] = useState<string>('');
+  const [isTrackerDropdownOpen, setIsTrackerDropdownOpen] = useState<boolean>(false);
+  const [trackerSearchInput, setTrackerSearchInput] = useState<string>('');
+
+  const trackerDropdownRef = useRef<HTMLDivElement>(null);
+
+  // Sync tracker search input when active value updates
+  useEffect(() => {
+    if (targetTrackerPpl) {
+      setTrackerSearchInput(targetTrackerPpl);
+    }
+  }, [targetTrackerPpl]);
+
+  // Click outside tracker dropdown to close it
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      if (trackerDropdownRef.current && !trackerDropdownRef.current.contains(event.target as Node)) {
+        setIsTrackerDropdownOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+    };
+  }, []);
 
   // UI Table Tab Tab
   const [tableTab, setTableTab] = useState<'daily' | 'cumulative'>('daily');
   const [leaderboardTab, setLeaderboardTab] = useState<'most' | 'least'>('most');
+
+  // Reset page sizes on filter change
+  useEffect(() => {
+    setBottomTablePage(1);
+  }, [selectedTablePml]);
+
+  useEffect(() => {
+    setDailyLogPage(1);
+  }, [selectedPml, selectedPpl, selectedDate, searchQuery, tableTab]);
 
   // Fetch method for multiple sheets (rekap & data lama)
   const fetchSheetData = async (silent = false, tokenOverride?: string | null) => {
@@ -289,6 +355,21 @@ export default function App() {
     return parsedData.pplList.filter(item => item.pml === selectedPml);
   }, [selectedPml, parsedData.pplList]);
 
+  // Synchronously initialize the default PPL for the Mempawah tracker card and sync with the active PML selection
+  useEffect(() => {
+    if (parsedData.pplList.length > 0) {
+      if (!targetTrackerPpl) {
+        setTargetTrackerPpl(parsedData.pplList[0].name);
+      } else if (selectedPml !== 'ALL') {
+        const pplsInPml = parsedData.pplList.filter(item => item.pml === selectedPml);
+        const currentStillValid = pplsInPml.some(item => item.name === targetTrackerPpl);
+        if (!currentStillValid && pplsInPml.length > 0) {
+          setTargetTrackerPpl(pplsInPml[0].name);
+        }
+      }
+    }
+  }, [parsedData.pplList, targetTrackerPpl, selectedPml]);
+
   // Apply selectors (PML, PPL, Date, Search Query) to the calculated daily deltas
   const processedRecords = useMemo(() => {
     let records = [...parsedData.table3Calculated];
@@ -323,6 +404,16 @@ export default function App() {
     return records;
   }, [parsedData.table3Calculated, selectedPml, selectedPpl, selectedDate, searchQuery]);
 
+  // Paginated daily logs
+  const paginatedProcessedRecords = useMemo(() => {
+    const startIndex = (dailyLogPage - 1) * 10;
+    return processedRecords.slice(startIndex, startIndex + 10);
+  }, [processedRecords, dailyLogPage]);
+
+  const totalDailyLogPages = useMemo(() => {
+    return Math.ceil(processedRecords.length / 10) || 1;
+  }, [processedRecords]);
+
   // Metrics KPI calculations
   const metricsKPIs = useMemo(() => {
     // We compute:
@@ -345,11 +436,13 @@ export default function App() {
     let totalCumSubmit = 0;
     let totalCumDraft = 0;
     let totalCumTotal = 0;
+    let totalCumMempawahTarget = 0;
 
     pplLatestMap.forEach(rec => {
       totalCumSubmit += rec.submit;
       totalCumDraft += rec.draft;
       totalCumTotal += rec.total;
+      totalCumMempawahTarget += rec.mempawahTarget || rec.total;
     });
 
     // Sum of non-accumulated daily additions within filtered records
@@ -367,6 +460,7 @@ export default function App() {
       cumSubmit: totalCumSubmit,
       cumDraft: totalCumDraft,
       cumTotal: totalCumTotal,
+      cumMempawahTarget: totalCumMempawahTarget,
       dailySubmit: totalDailySubmit,
       dailyDraft: totalDailyDraft,
       dailyTotal: totalDailyTotal,
@@ -377,19 +471,18 @@ export default function App() {
   // Find most active PPL based on average daily submits
   const mostActivePpl = useMemo(() => {
     const submitMap: Record<string, number> = {};
-    const daysMap: Record<string, number> = {};
     parsedData.table3Calculated.forEach(rec => {
       submitMap[rec.pplName] = (submitMap[rec.pplName] || 0) + rec.dailySubmit;
-      daysMap[rec.pplName] = (daysMap[rec.pplName] || 0) + 1;
     });
 
     let topName = "Tidak ada";
     let topAvg = 0;
     let topSum = 0;
 
+    const elapsedDays = getCurrentDayOfPendataan();
+
     Object.entries(submitMap).forEach(([name, val]) => {
-      const days = daysMap[name] || 1;
-      const avg = val / days;
+      const avg = val / elapsedDays;
       if (avg > topAvg) {
         topAvg = avg;
         topName = name;
@@ -450,16 +543,28 @@ export default function App() {
       ppls[rec.pplName].days += 1;
     });
 
+    const elapsedDays = getCurrentDayOfPendataan();
+
     Object.values(ppls).forEach(p => {
-      p.submitAvg = parseFloat((p.submit / (p.days || 1)).toFixed(2));
+      p.submitAvg = parseFloat((p.submit / elapsedDays).toFixed(2));
     });
 
     return Object.values(ppls).sort((a, b) => b.submitAvg - a.submitAvg || b.submit - a.submit);
   }, [parsedData.table3Calculated, selectedPml]);
 
+  // Handle local searching of PPL within the Detail Per PPL card
+  const filteredLivePplList = useMemo(() => {
+    if (!localPplFilter.trim()) return livePplList;
+    const query = localPplFilter.toLowerCase().trim();
+    return livePplList.filter(p => 
+      p.name.toLowerCase().includes(query) || 
+      p.pmlName.toLowerCase().includes(query)
+    );
+  }, [livePplList, localPplFilter]);
+
   // Dynamic PML Groups for bottom recap comparison card tables
-  const pmlGroups = useMemo<Record<string, { pplName: string; submit: number; draft: number; total: number; progress: number }[]>>(() => {
-    const groups: Record<string, { pplName: string; submit: number; draft: number; total: number; progress: number }[]> = {};
+  const pmlGroups = useMemo<Record<string, { pplName: string; submit: number; draft: number; total: number; progress: number; mempawahTarget: number }[]>>(() => {
+    const groups: Record<string, { pplName: string; submit: number; draft: number; total: number; progress: number; mempawahTarget: number }[]> = {};
     
     // Group table data by PML name
     parsedData.table3Calculated.forEach(rec => {
@@ -470,13 +575,15 @@ export default function App() {
       const groupList = groups[rec.pmlName];
       const existing = groupList.find(p => p.pplName === rec.pplName);
       
+      const recMempawahTarget = rec.mempawahTarget || rec.total;
       if (!existing) {
         groupList.push({
           pplName: rec.pplName,
           submit: rec.submit,
           draft: rec.draft,
           total: rec.total,
-          progress: rec.total > 0 ? parseFloat(((rec.submit / rec.total) * 100).toFixed(1)) : 0
+          mempawahTarget: recMempawahTarget,
+          progress: recMempawahTarget > 0 ? parseFloat(((rec.submit / recMempawahTarget) * 100).toFixed(1)) : 0
         });
       } else {
         // Keeps the latest/maximum record
@@ -484,7 +591,8 @@ export default function App() {
           existing.submit = rec.submit;
           existing.draft = rec.draft;
           existing.total = rec.total;
-          existing.progress = rec.total > 0 ? parseFloat(((rec.submit / rec.total) * 100).toFixed(1)) : 0;
+          existing.mempawahTarget = recMempawahTarget;
+          existing.progress = recMempawahTarget > 0 ? parseFloat(((rec.submit / recMempawahTarget) * 100).toFixed(1)) : 0;
         }
       }
     });
@@ -494,25 +602,95 @@ export default function App() {
 
   // Calculate Sub Totals for each PML group
   const pmlSubTotals = useMemo(() => {
-    const totals: Record<string, { submit: number; draft: number; total: number; progress: number }> = {};
-    (Object.entries(pmlGroups) as [string, { pplName: string; submit: number; draft: number; total: number; progress: number }[]][]).forEach(([pmlName, list]) => {
+    const totals: Record<string, { submit: number; draft: number; total: number; mempawahTarget: number; progress: number }> = {};
+    (Object.entries(pmlGroups) as [string, { pplName: string; submit: number; draft: number; total: number; progress: number; mempawahTarget: number }[]][]).forEach(([pmlName, list]) => {
       let subSubmit = 0;
       let subDraft = 0;
       let subTotal = 0;
+      let subMempawahTarget = 0;
       list.forEach(item => {
         subSubmit += item.submit;
         subDraft += item.draft;
         subTotal += item.total;
+        subMempawahTarget += item.mempawahTarget || item.total;
       });
       totals[pmlName] = {
         submit: subSubmit,
         draft: subDraft,
         total: subTotal,
-        progress: subTotal > 0 ? parseFloat(((subSubmit / subTotal) * 100).toFixed(1)) : 0
+        mempawahTarget: subMempawahTarget,
+        progress: subMempawahTarget > 0 ? parseFloat(((subSubmit / subMempawahTarget) * 100).toFixed(1)) : 0
       };
     });
     return totals;
   }, [pmlGroups]);
+
+  // Combine and sort data for the unified bottom table, filtered dynamically by selectedTablePml
+  const bottomTableData = useMemo(() => {
+    const list: { pmlName: string; pplName: string; submit: number; draft: number; total: number; progress: number; mempawahTarget: number }[] = [];
+    (Object.entries(pmlGroups) as [string, { pplName: string; submit: number; draft: number; total: number; progress: number; mempawahTarget: number }[]][]).forEach(([pmlName, ppls]) => {
+      if (selectedTablePml !== 'ALL' && pmlName !== selectedTablePml) {
+        return;
+      }
+      ppls.forEach(ppl => {
+        list.push({
+          pmlName,
+          ...ppl
+        });
+      });
+    });
+    // Sort by PML Name, then by PPL Name
+    return list.sort((a, b) => a.pmlName.localeCompare(b.pmlName) || a.pplName.localeCompare(b.pplName));
+  }, [pmlGroups, selectedTablePml]);
+
+  // Paginated bottom table data
+  const paginatedBottomTableData = useMemo(() => {
+    const startIndex = (bottomTablePage - 1) * 10;
+    return bottomTableData.slice(startIndex, startIndex + 10);
+  }, [bottomTableData, bottomTablePage]);
+
+  const totalBottomTablePages = useMemo(() => {
+    return Math.ceil(bottomTableData.length / 10) || 1;
+  }, [bottomTableData]);
+
+  // Target tracker helper for any selected PPL in Mempawah Deadline
+  const selectedPplTrackerInfo = useMemo(() => {
+    if (!targetTrackerPpl) return null;
+    
+    // Find in pmlGroups across all PMLs (unfiltered)
+    const entries = Object.entries(pmlGroups) as [string, { pplName: string; submit: number; draft: number; total: number; progress: number; mempawahTarget: number }[]][];
+    for (const [pmlName, list] of entries) {
+      const found = list.find(p => p.pplName === targetTrackerPpl);
+      if (found) {
+        return {
+          pmlName,
+          pplName: found.pplName,
+          submit: found.submit,
+          draft: found.draft,
+          total: found.total,
+          progress: found.progress,
+          mempawahTarget: found.mempawahTarget
+        };
+      }
+    }
+    return null;
+  }, [pmlGroups, targetTrackerPpl]);
+
+  // Combined totals for the unified bottom table
+  const bottomTableTotals = useMemo(() => {
+    let submit = 0;
+    let draft = 0;
+    let total = 0;
+    let mempawahTarget = 0;
+    bottomTableData.forEach(item => {
+      submit += item.submit;
+      draft += item.draft;
+      total += item.total;
+      mempawahTarget += item.mempawahTarget || item.total;
+    });
+    const progress = mempawahTarget > 0 ? parseFloat(((submit / mempawahTarget) * 100).toFixed(1)) : 0;
+    return { submit, draft, total, mempawahTarget, progress };
+  }, [bottomTableData]);
 
   // Find top star PPL for each PML team based on average daily submit
   const teamStars = useMemo(() => {
@@ -532,6 +710,8 @@ export default function App() {
       pmlToPplSubmits[rec.pmlName][rec.pplName].days += 1;
     });
 
+    const elapsedDays = selectedDate === 'ALL' ? getCurrentDayOfPendataan() : 1;
+
     const stars: { pmlName: string; pplName: string; submits: number; avg: number; initials: string }[] = [];
     Object.entries(pmlToPplSubmits).forEach(([pmlName, pplMap]) => {
       let topPpl = "";
@@ -539,7 +719,7 @@ export default function App() {
       let totalSub = 0;
       
       Object.entries(pplMap).forEach(([pplName, data]) => {
-        const avg = data.totalVal / (data.days || 1);
+        const avg = data.totalVal / elapsedDays;
         if (avg > maxAvg) {
           maxAvg = avg;
           topPpl = pplName;
@@ -566,7 +746,8 @@ export default function App() {
       }
     });
 
-    return stars;
+    // Only return top 3 stars with highest average submits
+    return [...stars].sort((a, b) => b.avg - a.avg || b.submits - a.submits).slice(0, 3);
   }, [parsedData.table3Calculated, selectedDate]);
 
   // Compute live leaderboard lists (Paling Produktif vs Paling Tidak Produktif) harian/filter - berdasarkan rata-rata
@@ -593,10 +774,11 @@ export default function App() {
       ppls[rec.pplName].daysCount += 1;
     });
 
+    const elapsedDays = selectedDate === 'ALL' ? getCurrentDayOfPendataan() : 1;
+
     Object.values(ppls).forEach(item => {
-      const divisor = item.daysCount || 1;
-      item.submitsAvg = parseFloat((item.submits / divisor).toFixed(2));
-      item.draftsAvg = parseFloat((item.drafts / divisor).toFixed(2));
+      item.submitsAvg = parseFloat((item.submits / elapsedDays).toFixed(2));
+      item.draftsAvg = parseFloat((item.drafts / elapsedDays).toFixed(2));
     });
 
     const arr = Object.values(ppls);
@@ -834,13 +1016,13 @@ export default function App() {
             <div className="flex items-baseline justify-between mt-1">
               <span className="text-xl font-black text-slate-800">{metricsKPIs.cumSubmit}</span>
               <span className="text-xs text-blue-600 font-extrabold bg-blue-50 px-1.5 py-0.5 rounded">
-                {metricsKPIs.cumTotal > 0 ? ((metricsKPIs.cumSubmit / metricsKPIs.cumTotal) * 100).toFixed(1) : '0'}% Selesai
+                {metricsKPIs.cumMempawahTarget > 0 ? ((metricsKPIs.cumSubmit / metricsKPIs.cumMempawahTarget) * 100).toFixed(1) : '0'}% Selesai
               </span>
             </div>
             <div className="w-full bg-slate-100 h-1.5 rounded-full mt-2 overflow-hidden">
               <div 
                 className="bg-blue-600 h-full transition-all duration-500" 
-                style={{ width: `${metricsKPIs.cumTotal > 0 ? Math.min((metricsKPIs.cumSubmit / metricsKPIs.cumTotal) * 100, 100) : 0}%` }}
+                style={{ width: `${metricsKPIs.cumMempawahTarget > 0 ? Math.min((metricsKPIs.cumSubmit / metricsKPIs.cumMempawahTarget) * 100, 100) : 0}%` }}
               ></div>
             </div>
           </div>
@@ -857,6 +1039,193 @@ export default function App() {
               </div>
             </div>
             <div className="text-[9px] text-indigo-500 font-bold uppercase tracking-wider mt-1">Productivity Winner</div>
+          </div>
+        </div>
+
+        {/* Kabupaten Mempawah Buffer Deadline Tracker */}
+        <div className="col-span-12 bg-white p-5 rounded-xl border border-slate-200 shadow-xs">
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-4 border-b border-slate-100">
+            <div>
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-[10px] bg-red-50 border border-red-200 text-red-700 font-extrabold px-2.5 py-0.5 rounded-full uppercase tracking-wider">
+                  Buffer Target Kabupaten Mempawah
+                </span>
+                <span className="text-[10px] bg-slate-100 border border-slate-200 text-slate-700 font-sans font-extrabold px-2.5 py-0.5 rounded-full uppercase">
+                  Deadline: 15 Agustus 2026
+                </span>
+              </div>
+              <h2 className="text-lg font-black mt-1.5 text-slate-800 tracking-tight flex items-center gap-2">
+                🎯 Pelacak Target Harian Petugas (Akselerasi Tepat Waktu)
+              </h2>
+              <p className="text-slate-500 text-xs mt-0.5 font-medium">Hitung mundur sisa hari kerja hingga target penyelesaian buffer tanggal 15 Agustus 2026.</p>
+            </div>
+            <div className="flex items-center gap-3 shrink-0 bg-slate-50 border border-slate-200 rounded-lg p-3 shadow-3xs">
+              <div className="w-8 h-8 rounded-full bg-orange-100 flex items-center justify-center text-orange-600">
+                <Calendar size={18} />
+              </div>
+              <div className="text-left font-sans min-w-[110px]">
+                <div className="text-[9px] text-slate-400 uppercase font-black tracking-wider">Sisa Hari Kerja</div>
+                <div className="text-base font-black font-mono text-orange-600">{getRemainingDaysToMempawahDeadline()} Hari Lagi</div>
+              </div>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-12 gap-5 mt-4">
+            {/* Control Form Column */}
+            <div className="md:col-span-5 flex flex-col justify-center gap-2.5">
+              <label className="text-[11px] font-black uppercase tracking-wider text-slate-500">Pilih Nama Petugas (PPL) Anda:</label>
+              <div className="relative" ref={trackerDropdownRef}>
+                <div className="relative">
+                  <input
+                    type="text"
+                    placeholder="Cari & pilih nama PPL..."
+                    value={trackerSearchInput}
+                    onChange={(e) => {
+                      setTrackerSearchInput(e.target.value);
+                      setIsTrackerDropdownOpen(true);
+                    }}
+                    onFocus={() => {
+                      setIsTrackerDropdownOpen(true);
+                    }}
+                    className="w-full bg-slate-50 hover:bg-slate-100/50 focus:bg-white border border-slate-200 rounded px-2.5 py-1.5 pl-8 text-xs text-slate-800 font-bold outline-hidden focus:border-orange-500 focus:ring-1 focus:ring-orange-500/10 transition-all shadow-3xs"
+                  />
+                  <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                  <button
+                    type="button"
+                    onClick={() => setIsTrackerDropdownOpen(!isTrackerDropdownOpen)}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer"
+                  >
+                    <ChevronDown size={14} className={`transition-transform duration-200 ${isTrackerDropdownOpen ? 'rotate-180' : ''}`} />
+                  </button>
+                </div>
+
+                {/* Dropdown Options List Container */}
+                <AnimatePresence>
+                  {isTrackerDropdownOpen && (() => {
+                    const filteredPpls = parsedData.pplList.filter(ppl => {
+                      if (selectedPml !== 'ALL' && ppl.pml !== selectedPml) return false;
+                      const q = trackerSearchInput.toLowerCase().trim();
+                      if (!q) return true;
+                      return ppl.name.toLowerCase().includes(q) || ppl.pml.toLowerCase().includes(q);
+                    });
+
+                    return (
+                      <motion.div
+                        initial={{ opacity: 0, y: -4 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0, y: -4 }}
+                        transition={{ duration: 0.15 }}
+                        className="absolute z-50 mt-1 w-full bg-white border border-slate-200 rounded-lg shadow-lg max-h-48 overflow-y-auto"
+                      >
+                        {filteredPpls.length > 0 ? (
+                          filteredPpls.map(ppl => (
+                            <button
+                              key={ppl.name}
+                              type="button"
+                              onClick={() => {
+                                setTargetTrackerPpl(ppl.name);
+                                setTrackerSearchInput(ppl.name);
+                                setIsTrackerDropdownOpen(false);
+                              }}
+                              className={`w-full text-left px-3 py-2 text-xs flex justify-between items-center transition-colors hover:bg-slate-50 border-b border-slate-100 last:border-0 ${
+                                targetTrackerPpl === ppl.name ? 'bg-orange-50 hover:bg-orange-50/80 text-orange-700 font-extrabold' : 'text-slate-700 font-semibold'
+                              }`}
+                            >
+                              <span className="truncate">{ppl.name}</span>
+                              <span className={`text-[10px] uppercase px-1.5 py-0.5 rounded-sm font-bold ml-2 ${
+                                targetTrackerPpl === ppl.name ? 'bg-orange-100 text-orange-700' : 'bg-slate-100 text-slate-500'
+                              }`}>
+                                PML: {ppl.pml}
+                              </span>
+                            </button>
+                          ))
+                        ) : (
+                          <div className="p-3 text-center text-xs text-slate-400 font-medium">
+                            Petugas tidak ditemukan
+                          </div>
+                        )}
+                      </motion.div>
+                    );
+                  })()}
+                </AnimatePresence>
+              </div>
+              <p className="text-[10px] text-slate-400 leading-relaxed font-semibold">
+                Silakan ketik atau cari dan pilih nama PPL Anda di atas untuk melihat status progres dari target rekap mandiri (Kolom F Google Sheet) secara tepat waktu.
+              </p>
+            </div>
+
+            {/* Calculations Outcome Column */}
+            <div className="md:col-span-7 bg-slate-50 border border-slate-100 p-4 rounded-lg flex flex-col justify-between shadow-3xs">
+              {selectedPplTrackerInfo ? (() => {
+                const targetLimit = selectedPplTrackerInfo.mempawahTarget || selectedPplTrackerInfo.total || 0;
+                const submitted = selectedPplTrackerInfo.submit || 0;
+                const remainingTarget = Math.max(0, targetLimit - submitted);
+                const remainingDays = getRemainingDaysToMempawahDeadline();
+                const dailyRequired = remainingTarget > 0 ? Math.ceil(remainingTarget / remainingDays) : 0;
+                const progressPct = targetLimit > 0 ? parseFloat(((submitted / targetLimit) * 100).toFixed(1)) : 0;
+
+                return (
+                  <div className="space-y-3.5">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1">
+                      <div>
+                        <div className="text-sm font-black text-slate-800">{selectedPplTrackerInfo.pplName}</div>
+                        <div className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">Supervisor PML: {selectedPplTrackerInfo.pmlName}</div>
+                      </div>
+                      <div className="text-right">
+                        <div className="text-[9px] text-slate-400 font-black uppercase tracking-wider">Progres Target Buffer</div>
+                        <div className="text-xs font-extrabold text-orange-600 font-mono">{progressPct}%</div>
+                      </div>
+                    </div>
+
+                    {/* Horizontal Progress Bar */}
+                    <div className="w-full bg-slate-200 h-2.5 rounded-full overflow-hidden shadow-inner">
+                      <div 
+                        className="bg-linear-to-r from-orange-400 to-amber-500 h-full rounded-full transition-all duration-300"
+                        style={{ width: `${Math.min(100, progressPct)}%` }}
+                      />
+                    </div>
+
+                    {/* Breakdowns Row */}
+                    <div className="grid grid-cols-3 gap-3 text-center">
+                      <div className="bg-white p-2.5 rounded border border-slate-150 shadow-3xs">
+                        <div className="text-[8px] text-slate-400 uppercase font-black tracking-widest leading-none">Mempawah Target</div>
+                        <div className="text-sm font-extrabold text-slate-800 font-mono mt-1">{targetLimit}</div>
+                      </div>
+                      <div className="bg-white p-2.5 rounded border border-slate-150 shadow-3xs">
+                        <div className="text-[8px] text-slate-400 uppercase font-black tracking-widest leading-none">Telah Submit</div>
+                        <div className="text-sm font-extrabold text-emerald-600 font-mono mt-1">{submitted}</div>
+                      </div>
+                      <div className="bg-white p-2.5 rounded border border-slate-150 shadow-3xs">
+                        <div className="text-[8px] text-slate-400 uppercase font-black tracking-widest leading-none">Sisa Dokumen</div>
+                        <div className="text-sm font-extrabold text-red-500 font-mono mt-1">{remainingTarget}</div>
+                      </div>
+                    </div>
+
+                    {/* Calculated required daily rate big badge */}
+                    <div className="bg-orange-50/60 border border-orange-100 p-3 rounded-lg flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-center sm:text-left">
+                      <div>
+                        <span className="text-[10px] uppercase font-black tracking-wider text-orange-850 block">Target Submit Hari Ini</span>
+                        <span className="text-[10px] text-slate-500 font-semibold">Minimal disubmit agar selesai maksimal 15 Agustus 2026</span>
+                      </div>
+                      {remainingTarget > 0 ? (
+                        <div className="bg-slate-900 text-white shrink-0 font-mono px-3.5 py-1.5 rounded-lg border border-slate-800 text-center shadow-xs">
+                          <span className="text-lg font-black">{dailyRequired}</span>
+                          <span className="text-[9px] text-slate-300 block font-sans font-extrabold uppercase tracking-wider">Dokumen / Hari</span>
+                        </div>
+                      ) : (
+                        <div className="bg-emerald-600 text-white font-black text-xs font-sans px-3.5 py-1.5 rounded-lg animate-bounce transform uppercase tracking-wider shrink-0 shadow-xs">
+                          Selesai Target! 🎉
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })() : (
+                <div className="flex items-center justify-center p-8 text-slate-450 text-xs font-bold">
+                  Memuat data pelacak target petugas...
+                </div>
+              )}
+            </div>
           </div>
         </div>
 
@@ -1033,18 +1402,38 @@ export default function App() {
 
         {/* Right side lists of PPL detailed progress */}
         <div className="col-span-12 lg:col-span-4 bg-white p-4 rounded-lg border border-slate-200 flex flex-col shadow-2xs h-[360px]">
-          <div className="flex justify-between items-center mb-3 pb-2 border-b border-slate-100">
+          <div className="flex justify-between items-center mb-2 pb-2 border-b border-slate-100">
             <h2 className="text-xs sm:text-sm font-bold flex items-center gap-2 text-slate-800">
               <span className="w-1.5 h-4 bg-orange-500 rounded-full"></span>
               Detail Per PPL (Real-time Delta)
             </h2>
-            <span className="text-[9px] bg-slate-100 text-slate-600 px-2 py-0.5 rounded-sm font-bold">Total Tim: {parsedData.pplList.length}</span>
+            <span className="text-[9px] bg-slate-100 text-slate-600 px-2 py-0.5 rounded-sm font-bold">PPL: {filteredLivePplList.length}/{filteredPplList.length}</span>
+          </div>
+
+          {/* Real-time search filter for PPL */}
+          <div className="relative mb-3">
+            <input 
+              type="text"
+              placeholder="Cari PPL di list ini..."
+              value={localPplFilter}
+              onChange={(e) => setLocalPplFilter(e.target.value)}
+              className="w-full bg-slate-50 hover:bg-slate-100/50 focus:bg-white border border-slate-200 rounded px-2.5 py-1.5 pl-8 text-xs text-slate-755 outline-hidden focus:border-orange-500 focus:ring-1 focus:ring-orange-500/10 transition-all shadow-3xs"
+            />
+            <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+            {localPplFilter && (
+              <button 
+                onClick={() => setLocalPplFilter('')}
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 font-bold font-sans text-xs cursor-pointer"
+              >
+                ✕
+              </button>
+            )}
           </div>
 
           {/* Styled List element */}
           <div className="flex-1 overflow-y-auto space-y-2 pr-1 scrollbar-thin">
-            {livePplList.length > 0 ? (
-              livePplList.map(ppl => (
+            {filteredLivePplList.length > 0 ? (
+              filteredLivePplList.map(ppl => (
                 <div key={ppl.name} className="p-2.5 bg-slate-50 border border-slate-100 rounded-md flex justify-between items-center text-xs hover:border-slate-300 transition-colors">
                   <div className="flex flex-col min-w-0 pr-2">
                     <span className="font-extrabold text-slate-800 truncate">{ppl.name}</span>
@@ -1057,66 +1446,130 @@ export default function App() {
                 </div>
               ))
             ) : (
-              <div className="flex items-center justify-center h-full text-slate-400 text-xs">
-                Tidak ada data PPL yang cocok.
+              <div className="flex flex-col items-center justify-center h-full text-slate-400 text-xs py-6 gap-2">
+                <Search size={18} className="text-slate-300" />
+                <span>Tidak ada data PPL yang cocok.</span>
               </div>
             )}
           </div>
         </div>
 
-        {/* Bottom Section: Dynamic Detailed Recap Tables by PML */}
-        <div className="col-span-12 grid grid-cols-1 md:grid-cols-2 gap-4">
-          {(Object.entries(pmlGroups) as [string, { pplName: string; submit: number; draft: number; total: number; progress: number }[]][]).map(([pmlName, pplList], index) => {
-            const totals = pmlSubTotals[pmlName] || { submit: 0, draft: 0, total: 0, progress: 0 };
-            const isFirst = index === 0;
-            return (
-              <div key={pmlName} className="bg-white rounded-lg border border-slate-200 flex flex-col shadow-2xs overflow-hidden">
-                <div className="px-4 py-2 bg-slate-50 border-b border-slate-200 flex justify-between items-center">
-                  <h3 className="text-xs font-black text-slate-700 uppercase flex items-center gap-1.5">
-                    <span className={`w-2 h-2 rounded-full ${isFirst ? 'bg-blue-600' : 'bg-purple-600'}`} />
-                    Table {index + 1}: Rekap {pmlName}
-                  </h3>
-                  <span className={`text-[9px] font-extrabold px-2.5 py-0.5 rounded-full uppercase tracking-wider ${isFirst ? 'bg-blue-105 text-blue-700' : 'bg-purple-105 text-purple-700'}`}>
-                    Total Akumulasi
-                  </span>
-                </div>
+        {/* Bottom Section: Unified Akumulasi Table with PML Filter */}
+        <div className="col-span-12 bg-white rounded-lg border border-slate-200 flex flex-col shadow-2xs overflow-hidden">
+          <div className="p-4 bg-slate-50 border-b border-slate-200 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
+            <div>
+              <h3 className="text-xs sm:text-sm font-black text-slate-705 uppercase flex items-center gap-2">
+                <Users size={15} className="text-blue-600" />
+                Table Akumulasi Progres Petugas (Per PML)
+              </h3>
+              <p className="text-[11px] text-slate-500 font-medium">Informasi menyeluruh penyelesaian target untuk seluruh tim lapangan berdasarkan rekap terkini</p>
+            </div>
+            
+            <div className="flex items-center gap-2 self-start sm:self-auto shrink-0 bg-white border border-slate-200 rounded px-3 py-1.5 text-xs shadow-3xs">
+              <Filter size={13} className="text-slate-400" />
+              <span className="font-bold text-slate-600">Pilih Supervisor PML:</span>
+              <select 
+                value={selectedTablePml} 
+                onChange={(e) => setSelectedTablePml(e.target.value)}
+                className="font-bold text-slate-800 bg-transparent outline-none cursor-pointer border-none"
+              >
+                <option value="ALL">Semua PML</option>
+                {parsedData.pmlList.map(pml => (
+                  <option key={pml} value={pml}>{pml}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+          
+          <div className="overflow-x-auto">
+            <table className="w-full text-[11px] text-left border-collapse">
+              <thead className="bg-slate-50 border-b border-slate-150">
+                <tr className="text-slate-500 uppercase tracking-wider font-extrabold text-[10px]">
+                  <th className="p-3 pl-4 text-center w-12">No</th>
+                  <th className="p-3">PML Supervisor</th>
+                  <th className="p-3">Nama PPL</th>
+                  <th className="p-3 text-center">Submit</th>
+                  <th className="p-3 text-center">Draft</th>
+                  <th className="p-3 text-center">Target (Kolom F)</th>
+                  <th className="p-3 text-right pr-6">Progres (%)</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 font-mono text-slate-700">
+                {paginatedBottomTableData.length > 0 ? (
+                  paginatedBottomTableData.map((ppl, index) => (
+                    <tr key={ppl.pplName} className="hover:bg-slate-50/50 transition-colors">
+                      <td className="p-2.5 pl-4 text-center text-slate-400 font-sans">{index + 1 + (bottomTablePage - 1) * 10}</td>
+                      <td className="p-2.5 font-sans font-bold text-slate-600">{ppl.pmlName}</td>
+                      <td className="p-2.5 font-sans font-semibold text-slate-800">{ppl.pplName}</td>
+                      <td className="p-2.5 text-center font-bold text-slate-800">{ppl.submit}</td>
+                      <td className="p-2.5 text-center text-slate-400">{ppl.draft}</td>
+                      <td className="p-2.5 text-center">{ppl.mempawahTarget}</td>
+                      <td className="p-2.5 text-right pr-6 font-bold text-blue-600">
+                        <div className="inline-flex items-center gap-1.5 justify-end w-full">
+                          <span className="text-[11px] font-bold text-slate-700">{ppl.progress}%</span>
+                          <div className="w-12 bg-slate-100 rounded-full h-1.5 overflow-hidden hidden sm:block">
+                            <div 
+                              className="bg-blue-600 h-full rounded-full"
+                              style={{ width: `${Math.min(100, ppl.progress)}%` }}
+                            />
+                          </div>
+                        </div>
+                      </td>
+                    </tr>
+                  ))
+                ) : (
+                  <tr>
+                    <td colSpan={7} className="p-8 text-center text-slate-400 font-sans">
+                      Tidak ada data akumulasi petugas untuk filter PML terpilih.
+                    </td>
+                  </tr>
+                )}
                 
-                <div className="overflow-x-auto">
-                  <table className="w-full text-[11px] text-left border-collapse">
-                    <thead className="bg-slate-50/50 border-b border-slate-150">
-                      <tr className="text-slate-500 uppercase tracking-wider font-extrabold text-[10px]">
-                        <th className="p-2.5 pl-4">NAMA PPL</th>
-                        <th className="p-2.5 text-center">SUBMIT</th>
-                        <th className="p-2.5 text-center">DRAFT</th>
-                        <th className="p-2.5 text-center">TOTAL</th>
-                        <th className="p-2.5 text-right pr-4">PROGRES (%)</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100 font-mono text-slate-700">
-                      {pplList.map(ppl => (
-                        <tr key={ppl.pplName} className="hover:bg-slate-55/35 transition-colors">
-                          <td className="p-2.5 pl-4 font-sans font-semibold text-slate-800">{ppl.pplName}</td>
-                          <td className="p-2.5 text-center font-bold text-slate-800">{ppl.submit}</td>
-                          <td className="p-2.5 text-center text-slate-400">{ppl.draft}</td>
-                          <td className="p-2.5 text-center">{ppl.total}</td>
-                          <td className={`p-2.5 text-right pr-4 font-bold ${isFirst ? 'text-blue-600' : 'text-purple-600'}`}>{ppl.progress}%</td>
-                        </tr>
-                      ))}
-                      
-                      {/* Sub-total summary state inside each table */}
-                      <tr className={`${isFirst ? 'bg-blue-50/30' : 'bg-purple-50/30'} font-bold`}>
-                        <td className="p-2.5 pl-4 font-bold font-sans uppercase text-slate-600">SUB TOTAL {pmlName.substring(0,10).toUpperCase()}</td>
-                        <td className="p-2.5 text-center font-black">{totals.submit}</td>
-                        <td className="p-2.5 text-center font-black">{totals.draft}</td>
-                        <td className="p-2.5 text-center">{totals.total}</td>
-                        <td className={`p-2.5 text-right pr-4 font-black ${isFirst ? 'text-blue-700' : 'text-purple-700'}`}>{totals.progress}%</td>
-                      </tr>
-                    </tbody>
-                  </table>
-                </div>
+                {/* Granular Table totals row at bottom */}
+                {bottomTableData.length > 0 && (
+                  <tr className="bg-blue-50/40 font-bold border-t border-blue-100">
+                    <td colSpan={3} className="p-3 pl-4 font-black font-sans uppercase text-slate-700">
+                      TOTAL {selectedTablePml === 'ALL' ? 'TIM GABUNGAN' : `TIM ${selectedTablePml.toUpperCase()}`}
+                    </td>
+                    <td className="p-3 text-center font-black text-slate-800">{bottomTableTotals.submit}</td>
+                    <td className="p-3 text-center font-black text-slate-400">{bottomTableTotals.draft}</td>
+                    <td className="p-3 text-center text-slate-700 font-black">{bottomTableTotals.mempawahTarget}</td>
+                    <td className="p-3 text-right pr-6 font-black text-blue-700 font-sans">
+                      <span className="font-extrabold text-blue-700 inline-block px-1.5 py-0.5 rounded bg-blue-100/50">{bottomTableTotals.progress}%</span>
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Pagination Footer */}
+          {bottomTableData.length > 0 && (
+            <div className="p-3 bg-slate-50/70 border-t border-slate-200 flex flex-col sm:flex-row justify-between items-center gap-3 text-xs text-slate-500 font-semibold">
+              <div>
+                Menampilkan <span className="text-slate-800 font-bold">{(bottomTablePage - 1) * 10 + 1}</span> - <span className="text-slate-800 font-bold">{Math.min(bottomTablePage * 10, bottomTableData.length)}</span> dari <span className="text-slate-800 font-bold">{bottomTableData.length}</span> petugas
               </div>
-            );
-          })}
+              <div className="flex gap-1.5">
+                <button
+                  disabled={bottomTablePage === 1}
+                  onClick={() => setBottomTablePage(prev => Math.max(1, prev - 1))}
+                  className="px-2.5 py-1 bg-white border border-slate-250 rounded hover:bg-slate-50 disabled:opacity-40 disabled:hover:bg-white text-slate-755 font-bold transition-all disabled:cursor-not-allowed cursor-pointer"
+                >
+                  Sebelumnya
+                </button>
+                <div className="flex items-center px-1 text-slate-700 font-sans font-bold text-[11px]">
+                  Halaman {bottomTablePage} / {totalBottomTablePages}
+                </div>
+                <button
+                  disabled={bottomTablePage === totalBottomTablePages}
+                  onClick={() => setBottomTablePage(prev => Math.min(totalBottomTablePages, prev + 1))}
+                  className="px-2.5 py-1 bg-white border border-slate-250 rounded hover:bg-slate-50 disabled:opacity-40 disabled:hover:bg-white text-slate-755 font-bold transition-all disabled:cursor-not-allowed cursor-pointer"
+                >
+                  Selanjutnya
+                </button>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Global interactive delta or cumulative table log summary */}
@@ -1161,8 +1614,8 @@ export default function App() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 font-mono text-slate-700">
-                {processedRecords.length > 0 ? (
-                  processedRecords.map((item, index) => {
+                {paginatedProcessedRecords.length > 0 ? (
+                  paginatedProcessedRecords.map((item, index) => {
                     const isSubmitPositive = tableTab === 'daily' ? item.dailySubmit > 0 : item.submit > 0;
                     return (
                       <tr key={`${item.pplName}-${item.dateStr}-${index}`} className="hover:bg-slate-50/50 transition-colors">
@@ -1237,10 +1690,33 @@ export default function App() {
               </tbody>
             </table>
           </div>
-          <div className="bg-slate-50 p-3 border-t border-slate-150 text-[10px] text-slate-400 font-bold uppercase tracking-wider flex justify-between items-center">
-            <span>Sinkronisasi Data Maksimal: Aktif (Mundur Otomatis 30m)</span>
-            <span>Total Catatan: {processedRecords.length} / {parsedData.table3Calculated.length}</span>
-          </div>
+
+          {processedRecords.length > 0 && (
+            <div className="p-3 bg-slate-50 border-t border-slate-200 flex flex-col sm:flex-row justify-between items-center gap-3 text-xs text-slate-500 font-semibold">
+              <div className="text-slate-500">
+                Menampilkan <span className="text-slate-800 font-bold">{(dailyLogPage - 1) * 10 + 1}</span> - <span className="text-slate-800 font-bold">{Math.min(dailyLogPage * 10, processedRecords.length)}</span> dari <span className="text-slate-800 font-bold">{processedRecords.length}</span> log aktivitas
+              </div>
+              <div className="flex gap-1.5 shrink-0 animate-fade-in">
+                <button
+                  disabled={dailyLogPage === 1}
+                  onClick={() => setDailyLogPage(prev => Math.max(1, prev - 1))}
+                  className="px-2.5 py-1 bg-white border border-slate-250 rounded hover:bg-slate-50 disabled:opacity-40 disabled:hover:bg-white text-slate-755 font-bold transition-all disabled:cursor-not-allowed cursor-pointer"
+                >
+                  Sebelumnya
+                </button>
+                <div className="flex items-center px-1 text-slate-700 font-sans font-bold text-[11px]">
+                  Halaman {dailyLogPage} / {totalDailyLogPages}
+                </div>
+                <button
+                  disabled={dailyLogPage === totalDailyLogPages}
+                  onClick={() => setDailyLogPage(prev => Math.min(totalDailyLogPages, prev + 1))}
+                  className="px-2.5 py-1 bg-white border border-slate-250 rounded hover:bg-slate-50 disabled:opacity-40 disabled:hover:bg-white text-slate-755 font-bold transition-all disabled:cursor-not-allowed cursor-pointer"
+                >
+                  Selanjutnya
+                </button>
+              </div>
+            </div>
+          )}
         </div>
 
       </main>

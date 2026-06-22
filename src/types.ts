@@ -4,6 +4,7 @@ export interface PPLSummary {
   submit: number;
   draft: number;
   total: number;
+  mempawahTarget?: number;
 }
 
 export interface Table3Record {
@@ -14,6 +15,7 @@ export interface Table3Record {
   total: number;
   dateStr: string;   // e.g., "19 Juni 2026"
   date: Date;        // parsed JavaScript Date object
+  mempawahTarget?: number;
 }
 
 export interface PPLDailyProgress extends Table3Record {

@@ -94,13 +94,18 @@ export function parseNewSheetsData(
     const cols = rawCols.map(c => c.replace(/^"|"$/g, '').trim());
     
     if (cols.length >= 5 && cols[0] && cols[0] !== 'Nama PML' && cols[1]) {
-      const pmlName = cols[0];
-      const pplName = cols[1];
+      let pmlName = cols[0];
+      let pplName = cols[1];
+      if (pmlName === '#N/A') pmlName = 'Belum Terpetakan';
+      if (pplName === '#N/A') pplName = 'Belum Terpetakan';
+      
       const submit = parseInt(cols[2], 10) || 0;
       const draft = parseInt(cols[3], 10) || 0;
       const total = parseInt(cols[4], 10) || 0;
+      const mempawahTargetValue = cols[5] ? (parseInt(cols[5], 10) || 0) : 0;
+      const mempawahTarget = mempawahTargetValue > 0 ? mempawahTargetValue : total;
       
-      table1.push({ pmlName, pplName, submit, draft, total });
+      table1.push({ pmlName, pplName, submit, draft, total, mempawahTarget });
       
       // Add active dynamic snapshot to chronological log
       table3.push({
@@ -109,11 +114,18 @@ export function parseNewSheetsData(
         submit,
         draft,
         total,
+        mempawahTarget,
         dateStr: activeWIBDateStr,
         date: parseIndonesianDate(activeWIBDateStr)
       });
     }
   }
+  
+  // Create a map of PPL -> mempawahTarget from rekap for historical lookup
+  const pplTargetMap = new Map<string, number>();
+  table1.forEach(item => {
+    pplTargetMap.set(item.pplName, item.mempawahTarget || item.total);
+  });
   
   // 2. Parse data lama (history archive data logs)
   const dataLamaLines = dataLamaCSV.split(/\r?\n/);
@@ -125,8 +137,11 @@ export function parseNewSheetsData(
     const cols = rawCols.map(c => c.replace(/^"|"$/g, '').trim());
     
     if (cols.length >= 6 && cols[0] && cols[0] !== 'Nama PML' && cols[1] && cols[5]) {
-      const pmlName = cols[0];
-      const pplName = cols[1];
+      let pmlName = cols[0];
+      let pplName = cols[1];
+      if (pmlName === '#N/A') pmlName = 'Belum Terpetakan';
+      if (pplName === '#N/A') pplName = 'Belum Terpetakan';
+      
       const submit = parseInt(cols[2], 10) || 0;
       const draft = parseInt(cols[3], 10) || 0;
       const total = parseInt(cols[4], 10) || 0;
@@ -136,12 +151,14 @@ export function parseNewSheetsData(
       // let the active "rekap" row take precedence and don't duplicate.
       const isDuplicate = table3.some(item => item.pplName === pplName && item.dateStr === dateStr);
       if (!isDuplicate) {
+        const mempawahTarget = pplTargetMap.get(pplName) || total;
         table3.push({
           pmlName,
           pplName,
           submit,
           draft,
           total,
+          mempawahTarget,
           dateStr,
           date: parseIndonesianDate(dateStr)
         });
