@@ -202,6 +202,7 @@ export default function App() {
   const [localPplFilter, setLocalPplFilter] = useState<string>('');
   const [isTrackerDropdownOpen, setIsTrackerDropdownOpen] = useState<boolean>(false);
   const [trackerSearchInput, setTrackerSearchInput] = useState<string>('');
+  const [trackerPage, setTrackerPage] = useState<number>(1);
 
   const trackerDropdownRef = useRef<HTMLDivElement>(null);
 
@@ -224,6 +225,12 @@ export default function App() {
       document.removeEventListener("mousedown", handleClickOutside);
     };
   }, []);
+
+  // Reset tracker page to 1 when PML selection changes
+  useEffect(() => {
+    setTrackerPage(1);
+    setTrackerSearchInput('');
+  }, [selectedPml]);
 
   // UI Table Tab Tab
   const [tableTab, setTableTab] = useState<'daily' | 'cumulative'>('daily');
@@ -676,6 +683,69 @@ export default function App() {
     return null;
   }, [pmlGroups, targetTrackerPpl]);
 
+  // Calculation of target tracker data for all PPLs belonging to the active team or filtered set
+  const pplsInActivePml = useMemo(() => {
+    const list: {
+      pmlName: string;
+      pplName: string;
+      submit: number;
+      draft: number;
+      total: number;
+      progress: number;
+      mempawahTarget: number;
+      remainingTarget: number;
+      dailyRequired: number;
+    }[] = [];
+    
+    const entries = Object.entries(pmlGroups) as [string, { pplName: string; submit: number; draft: number; total: number; progress: number; mempawahTarget: number }[]][];
+    const remainingDays = getRemainingDaysToMempawahDeadline();
+    
+    entries.forEach(([pmlName, pplList]) => {
+      if (selectedPml !== 'ALL' && pmlName !== selectedPml) return;
+      pplList.forEach(p => {
+        const targetLimit = p.mempawahTarget || p.total || 0;
+        const submitted = p.submit || 0;
+        const remainingTarget = Math.max(0, targetLimit - submitted);
+        const dailyRequired = remainingDays > 0 && remainingTarget > 0 ? Math.ceil(remainingTarget / remainingDays) : 0;
+        list.push({
+          pmlName,
+          pplName: p.pplName,
+          submit: submitted,
+          draft: p.draft,
+          total: p.total,
+          progress: p.progress,
+          mempawahTarget: targetLimit,
+          remainingTarget,
+          dailyRequired
+        });
+      });
+    });
+    
+    return list.sort((a, b) => b.dailyRequired - a.dailyRequired || a.pplName.localeCompare(b.pplName));
+  }, [pmlGroups, selectedPml]);
+
+  // Active PPLs list filtered by the tracker search queries
+  const filteredTrackerPpls = useMemo(() => {
+    if (!trackerSearchInput.trim()) return pplsInActivePml;
+    const q = trackerSearchInput.toLowerCase().trim();
+    return pplsInActivePml.filter(p => 
+      p.pplName.toLowerCase().includes(q) || 
+      p.pmlName.toLowerCase().includes(q)
+    );
+  }, [pplsInActivePml, trackerSearchInput]);
+
+  // Paginated active tracker PPLs array
+  const trackerItemsPerPage = 6;
+  const paginatedTrackerPpls = useMemo(() => {
+    const startIndex = (trackerPage - 1) * trackerItemsPerPage;
+    return filteredTrackerPpls.slice(startIndex, startIndex + trackerItemsPerPage);
+  }, [filteredTrackerPpls, trackerPage]);
+
+  // Total pages count for the active tracker section
+  const totalTrackerPages = useMemo(() => {
+    return Math.ceil(filteredTrackerPpls.length / trackerItemsPerPage) || 1;
+  }, [filteredTrackerPpls]);
+
   // Combined totals for the unified bottom table
   const bottomTableTotals = useMemo(() => {
     let submit = 0;
@@ -1070,163 +1140,154 @@ export default function App() {
             </div>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-12 gap-5 mt-4">
-            {/* Control Form Column */}
-            <div className="md:col-span-5 flex flex-col justify-center gap-2.5">
-              <label className="text-[11px] font-black uppercase tracking-wider text-slate-500">Pilih Nama Petugas (PPL) Anda:</label>
-              <div className="relative" ref={trackerDropdownRef}>
-                <div className="relative">
-                  <input
-                    type="text"
-                    placeholder="Cari & pilih nama PPL..."
-                    value={trackerSearchInput}
-                    onChange={(e) => {
-                      setTrackerSearchInput(e.target.value);
-                      setIsTrackerDropdownOpen(true);
-                    }}
-                    onFocus={() => {
-                      setIsTrackerDropdownOpen(true);
-                    }}
-                    className="w-full bg-slate-50 hover:bg-slate-100/50 focus:bg-white border border-slate-200 rounded px-2.5 py-1.5 pl-8 text-xs text-slate-800 font-bold outline-hidden focus:border-orange-500 focus:ring-1 focus:ring-orange-500/10 transition-all shadow-3xs"
-                  />
-                  <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
-                  <button
-                    type="button"
-                    onClick={() => setIsTrackerDropdownOpen(!isTrackerDropdownOpen)}
-                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer"
-                  >
-                    <ChevronDown size={14} className={`transition-transform duration-200 ${isTrackerDropdownOpen ? 'rotate-180' : ''}`} />
-                  </button>
-                </div>
-
-                {/* Dropdown Options List Container */}
-                <AnimatePresence>
-                  {isTrackerDropdownOpen && (() => {
-                    const filteredPpls = parsedData.pplList.filter(ppl => {
-                      if (selectedPml !== 'ALL' && ppl.pml !== selectedPml) return false;
-                      const q = trackerSearchInput.toLowerCase().trim();
-                      if (!q) return true;
-                      return ppl.name.toLowerCase().includes(q) || ppl.pml.toLowerCase().includes(q);
-                    });
-
-                    return (
-                      <motion.div
-                        initial={{ opacity: 0, y: -4 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        exit={{ opacity: 0, y: -4 }}
-                        transition={{ duration: 0.15 }}
-                        className="absolute z-50 mt-1 w-full bg-white border border-slate-200 rounded-lg shadow-lg max-h-48 overflow-y-auto"
-                      >
-                        {filteredPpls.length > 0 ? (
-                          filteredPpls.map(ppl => (
-                            <button
-                              key={ppl.name}
-                              type="button"
-                              onClick={() => {
-                                setTargetTrackerPpl(ppl.name);
-                                setTrackerSearchInput(ppl.name);
-                                setIsTrackerDropdownOpen(false);
-                              }}
-                              className={`w-full text-left px-3 py-2 text-xs flex justify-between items-center transition-colors hover:bg-slate-50 border-b border-slate-100 last:border-0 ${
-                                targetTrackerPpl === ppl.name ? 'bg-orange-50 hover:bg-orange-50/80 text-orange-700 font-extrabold' : 'text-slate-700 font-semibold'
-                              }`}
-                            >
-                              <span className="truncate">{ppl.name}</span>
-                              <span className={`text-[10px] uppercase px-1.5 py-0.5 rounded-sm font-bold ml-2 ${
-                                targetTrackerPpl === ppl.name ? 'bg-orange-100 text-orange-700' : 'bg-slate-100 text-slate-500'
-                              }`}>
-                                PML: {ppl.pml}
-                              </span>
-                            </button>
-                          ))
-                        ) : (
-                          <div className="p-3 text-center text-xs text-slate-400 font-medium">
-                            Petugas tidak ditemukan
-                          </div>
-                        )}
-                      </motion.div>
-                    );
-                  })()}
-                </AnimatePresence>
-              </div>
-              <p className="text-[10px] text-slate-400 leading-relaxed font-semibold">
-                Silakan ketik atau cari dan pilih nama PPL Anda di atas untuk melihat status progres dari target rekap mandiri (Kolom F Google Sheet) secara tepat waktu.
-              </p>
+          {/* Controls Bar */}
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 mt-4 bg-slate-55 border border-slate-150 p-3 rounded-lg shadow-3xs">
+            <div className="relative w-full md:w-72">
+              <input
+                type="text"
+                placeholder="Cari nama PPL..."
+                value={trackerSearchInput}
+                onChange={(e) => {
+                  setTrackerSearchInput(e.target.value);
+                  setTrackerPage(1);
+                }}
+                className="w-full bg-white hover:bg-slate-50 focus:bg-white border border-slate-250 rounded px-2.5 py-1.5 pl-8 text-xs text-slate-800 font-bold outline-hidden focus:border-orange-500 focus:ring-1 focus:ring-orange-500/10 transition-all shadow-3xs"
+              />
+              <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+              {trackerSearchInput && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setTrackerSearchInput('');
+                    setTrackerPage(1);
+                  }}
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-605 font-extrabold text-[10px] bg-slate-100 px-1 rounded-sm"
+                >
+                  Clear
+                </button>
+              )}
             </div>
+            
+            <div className="flex flex-wrap items-center gap-2 text-xs">
+              <div className="bg-orange-100 text-orange-950 border border-orange-205 px-2.5 py-1 rounded-md font-sans font-extrabold text-[10px] uppercase">
+                Filter PML Aktif: <span className="underline">{selectedPml === 'ALL' ? 'Semua Tim' : selectedPml}</span>
+              </div>
+              <div className="bg-slate-100 text-slate-750 border border-slate-220 px-2.5 py-1 rounded-md font-sans font-extrabold text-[10px] uppercase">
+                Total PPL Terpilih: {filteredTrackerPpls.length} / {pplsInActivePml.length} Orang
+              </div>
+            </div>
+          </div>
 
-            {/* Calculations Outcome Column */}
-            <div className="md:col-span-7 bg-slate-50 border border-slate-100 p-4 rounded-lg flex flex-col justify-between shadow-3xs">
-              {selectedPplTrackerInfo ? (() => {
-                const targetLimit = selectedPplTrackerInfo.mempawahTarget || selectedPplTrackerInfo.total || 0;
-                const submitted = selectedPplTrackerInfo.submit || 0;
-                const remainingTarget = Math.max(0, targetLimit - submitted);
-                const remainingDays = getRemainingDaysToMempawahDeadline();
-                const dailyRequired = remainingTarget > 0 ? Math.ceil(remainingTarget / remainingDays) : 0;
-                const progressPct = targetLimit > 0 ? parseFloat(((submitted / targetLimit) * 100).toFixed(1)) : 0;
-
+          {/* Cards Grid of all PPLs under selected/active PML team */}
+          {paginatedTrackerPpls.length > 0 ? (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5 mt-5">
+              {paginatedTrackerPpls.map((ppl) => {
+                const isFinished = ppl.remainingTarget === 0;
                 return (
-                  <div className="space-y-3.5">
-                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1">
-                      <div>
-                        <div className="text-sm font-black text-slate-800">{selectedPplTrackerInfo.pplName}</div>
-                        <div className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">Supervisor PML: {selectedPplTrackerInfo.pmlName}</div>
+                  <div 
+                    key={ppl.pplName}
+                    className="bg-linear-to-b from-white to-slate-50 border border-slate-200 p-4 rounded-xl flex flex-col justify-between shadow-3xs hover:shadow-2xs hover:border-orange-200 transition-all duration-300 relative overflow-hidden"
+                  >
+                    {/* Top part: Name & Supervisor PML */}
+                    <div className="space-y-2">
+                      <div className="flex items-start justify-between gap-1.5">
+                        <div className="min-w-0">
+                          <div className="text-sm font-black text-slate-800 tracking-tight truncate(26)" title={ppl.pplName}>{ppl.pplName}</div>
+                          <div className="text-[9.5px] text-slate-450 font-bold uppercase tracking-wider mt-1 leading-none">
+                            Supervisor: {ppl.pmlName}
+                          </div>
+                        </div>
+                        <div className="text-right shrink-0">
+                          <div className="text-[7.5px] text-slate-400 font-black uppercase tracking-wider leading-none">Progres target</div>
+                          <div className="text-xs font-black text-orange-600 font-mono mt-0.5">{ppl.progress}%</div>
+                        </div>
                       </div>
-                      <div className="text-right">
-                        <div className="text-[9px] text-slate-400 font-black uppercase tracking-wider">Progres Target Buffer</div>
-                        <div className="text-xs font-extrabold text-orange-600 font-mono">{progressPct}%</div>
+
+                      {/* Horizontal progress bar */}
+                      <div className="w-full bg-slate-200 h-2 rounded-full overflow-hidden shadow-inner mt-2">
+                        <div 
+                          className="bg-linear-to-r from-orange-400 to-amber-500 h-full rounded-full transition-all duration-500"
+                          style={{ width: `${Math.min(100, ppl.progress)}%` }}
+                        />
+                      </div>
+
+                      {/* Stats Breakdowns row */}
+                      <div className="grid grid-cols-3 gap-2 text-center mt-3">
+                        <div className="bg-white p-2 border border-slate-150 shadow-3xs rounded-md">
+                          <div className="text-[7.5px] text-slate-400 uppercase font-black tracking-wider leading-none">Target Buffer</div>
+                          <div className="text-xs font-black text-slate-850 font-mono mt-1.5">{ppl.mempawahTarget}</div>
+                        </div>
+                        <div className="bg-white p-2 border border-slate-150 shadow-3xs rounded-md">
+                          <div className="text-[7.5px] text-slate-400 uppercase font-black tracking-wider leading-none">Telah Submit</div>
+                          <div className="text-xs font-black text-emerald-600 font-mono mt-1.5">{ppl.submit}</div>
+                        </div>
+                        <div className="bg-white p-2 border border-slate-150 shadow-3xs rounded-md">
+                          <div className="text-[7.5px] text-slate-400 uppercase font-black tracking-wider leading-none">Sisa Dokumen</div>
+                          <div className="text-xs font-black text-red-500 font-mono mt-1.5">{ppl.remainingTarget}</div>
+                        </div>
                       </div>
                     </div>
 
-                    {/* Horizontal Progress Bar */}
-                    <div className="w-full bg-slate-200 h-2.5 rounded-full overflow-hidden shadow-inner">
-                      <div 
-                        className="bg-linear-to-r from-orange-400 to-amber-500 h-full rounded-full transition-all duration-300"
-                        style={{ width: `${Math.min(100, progressPct)}%` }}
-                      />
-                    </div>
-
-                    {/* Breakdowns Row */}
-                    <div className="grid grid-cols-3 gap-3 text-center">
-                      <div className="bg-white p-2.5 rounded border border-slate-150 shadow-3xs">
-                        <div className="text-[8px] text-slate-400 uppercase font-black tracking-widest leading-none">Mempawah Target</div>
-                        <div className="text-sm font-extrabold text-slate-800 font-mono mt-1">{targetLimit}</div>
+                    {/* Bottom part: Required Daily Speed limits */}
+                    <div className="bg-orange-50/60 border border-orange-100 p-2.5 rounded-lg flex items-center justify-between gap-1.5 text-left mt-3.5">
+                      <div className="min-w-0">
+                        <span className="text-[8.5px] uppercase font-black tracking-wider text-orange-850 block">Target Submit Hari Ini</span>
+                        <span className="text-[8.5px] text-slate-500 font-bold leading-normal truncate block">
+                          {isFinished ? "Apresiasi Luar Biasa!" : "Minimal disubmit / hari kerja"}
+                        </span>
                       </div>
-                      <div className="bg-white p-2.5 rounded border border-slate-150 shadow-3xs">
-                        <div className="text-[8px] text-slate-400 uppercase font-black tracking-widest leading-none">Telah Submit</div>
-                        <div className="text-sm font-extrabold text-emerald-600 font-mono mt-1">{submitted}</div>
-                      </div>
-                      <div className="bg-white p-2.5 rounded border border-slate-150 shadow-3xs">
-                        <div className="text-[8px] text-slate-400 uppercase font-black tracking-widest leading-none">Sisa Dokumen</div>
-                        <div className="text-sm font-extrabold text-red-500 font-mono mt-1">{remainingTarget}</div>
-                      </div>
-                    </div>
-
-                    {/* Calculated required daily rate big badge */}
-                    <div className="bg-orange-50/60 border border-orange-100 p-3 rounded-lg flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-center sm:text-left">
-                      <div>
-                        <span className="text-[10px] uppercase font-black tracking-wider text-orange-850 block">Target Submit Hari Ini</span>
-                        <span className="text-[10px] text-slate-500 font-semibold">Minimal disubmit agar selesai maksimal 15 Agustus 2026</span>
-                      </div>
-                      {remainingTarget > 0 ? (
-                        <div className="bg-slate-900 text-white shrink-0 font-mono px-3.5 py-1.5 rounded-lg border border-slate-800 text-center shadow-xs">
-                          <span className="text-lg font-black">{dailyRequired}</span>
-                          <span className="text-[9px] text-slate-300 block font-sans font-extrabold uppercase tracking-wider">Dokumen / Hari</span>
+                      {!isFinished ? (
+                        <div className="bg-slate-900 border border-slate-850 text-white font-mono px-2.5 py-1 rounded-md text-center shadow-xs shrink-0 flex flex-col items-center justify-center">
+                          <span className="text-sm font-black leading-none">{ppl.dailyRequired}</span>
+                          <span className="text-[7.5px] text-slate-300 font-sans font-extrabold uppercase tracking-widest mt-0.5 leading-none">Dok / Hari</span>
                         </div>
                       ) : (
-                        <div className="bg-emerald-600 text-white font-black text-xs font-sans px-3.5 py-1.5 rounded-lg animate-bounce transform uppercase tracking-wider shrink-0 shadow-xs">
-                          Selesai Target! 🎉
+                        <div className="bg-emerald-600 text-white font-sans font-black text-[8.5px] px-2.5 py-1 rounded-md uppercase tracking-wider shrink-0 shadow-xs text-center">
+                          Selesai! 🎉
                         </div>
                       )}
                     </div>
                   </div>
                 );
-              })() : (
-                <div className="flex items-center justify-center p-8 text-slate-450 text-xs font-bold">
-                  Memuat data pelacak target petugas...
-                </div>
-              )}
+              })}
             </div>
-          </div>
+          ) : (
+            <div className="flex flex-col items-center justify-center p-12 text-center bg-slate-50 rounded-xl border border-dashed border-slate-250 mt-4">
+              <span className="text-slate-400 font-bold text-center text-xs">Petugas (PPL) dalam filter PML ini tidak ditemukan atau kata kunci tidak pas.</span>
+              <button 
+                type="button"
+                onClick={() => setTrackerSearchInput('')} 
+                className="mt-2.5 text-[10px] font-black uppercase text-orange-600 hover:text-orange-700 bg-white border border-orange-200 px-3 py-1 rounded shadow-3xs cursor-pointer"
+              >
+                Reset Pencarian
+              </button>
+            </div>
+          )}
+
+          {/* Pagination Controls */}
+          {totalTrackerPages > 1 && (
+            <div className="flex items-center justify-between border-t border-slate-100 pt-3.5 mt-5">
+              <button
+                type="button"
+                onClick={() => setTrackerPage(prev => Math.max(1, prev - 1))}
+                disabled={trackerPage === 1}
+                className="px-3 py-1 text-xs font-extrabold text-slate-600 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-md disabled:opacity-40 disabled:cursor-not-allowed transition-colors cursor-pointer"
+              >
+                Sebelumnya
+              </button>
+              <span className="text-xs text-slate-500 font-mono font-bold">
+                Halaman {trackerPage} / {totalTrackerPages}
+              </span>
+              <button
+                type="button"
+                onClick={() => setTrackerPage(prev => Math.min(totalTrackerPages, prev + 1))}
+                disabled={trackerPage === totalTrackerPages}
+                className="px-3 py-1 text-xs font-extrabold text-slate-600 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-md disabled:opacity-40 disabled:cursor-not-allowed transition-colors cursor-pointer"
+              >
+                Berikutnya
+              </button>
+            </div>
+          )}
         </div>
 
         {/* Dynamic Team Stars Appreciation & Leaderboard Rank */}
