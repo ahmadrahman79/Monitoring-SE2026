@@ -1,16 +1,8 @@
 {
-  "name": "monitoring-se2026",
+  "name": "react-example",
   "private": true,
-  "version": "1.0.0",
+  "version": "0.0.0",
   "type": "module",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/ahmadrahman79/Monitoring-SE2026.git"
-  },
-  "bugs": {
-    "url": "https://github.com/ahmadrahman79/Monitoring-SE2026/issues"
-  },
-  "homepage": "https://github.com/ahmadrahman79/Monitoring-SE2026#readme",
   "scripts": {
     "dev": "vite --port=3000 --host=0.0.0.0",
     "build": "vite build",
