@@ -85,8 +85,7 @@ export function convertValuesToCSV(values: any[][]): string {
 export function parseNewSheetsData(
   rekapCSV: string,
   dataLamaCSV: string,
-  activeWIBDateStr: string,
-  firebaseLogs?: any[]
+  activeWIBDateStr: string
 ): ParsedModel {
   const table1: PPLSummary[] = [];
   const table3: Table3Record[] = [];
@@ -226,26 +225,42 @@ export function parseNewSheetsData(
     pplTargetMap.set(item.pplName, item.mempawahTarget || item.total);
   });
   
-  // 3. Parse historical data (from Firebase or fallback to data lama CSV)
-  if (firebaseLogs && firebaseLogs.length > 0) {
-    firebaseLogs.forEach(log => {
-      let pmlName = log.pmlName;
-      let pplName = log.pplName;
+  // 3. Parse historical data from data lama CSV
+  const dataLamaLines = dataLamaCSV.split(/\r?\n/);
+  for (let i = 1; i < dataLamaLines.length; i++) {
+    const line = dataLamaLines[i].trim();
+    if (!line) continue;
+    
+    const rawCols = parseCSVLine(line);
+    const cols = rawCols.map(c => c.replace(/^"|"$/g, '').trim());
+    
+    if (cols.length > Math.max(dataLamaPmlIdx, dataLamaPplIdx) && cols[dataLamaPmlIdx] && cols[dataLamaPmlIdx] !== 'Nama PML' && cols[dataLamaPplIdx] && cols[dataLamaPplIdx] !== 'Nama PPL') {
+      let pmlName = cols[dataLamaPmlIdx];
+      let pplName = cols[dataLamaPplIdx];
       if (pmlName === '#N/A') pmlName = 'Belum Terpetakan';
       if (pplName === '#N/A') pplName = 'Belum Terpetakan';
       
-      const submit = log.submit || 0;
-      const draft = log.draft || 0;
-      const total = log.total || 0;
-      const dateStr = log.dateStr;
+      const submit = parseInt(cols[dataLamaSubmitIdx], 10) || 0;
+      const draft = parseInt(cols[dataLamaDraftIdx], 10) || 0;
+      const total = parseInt(cols[dataLamaTotalIdx], 10) || 0;
+      
+      let dateStr = '';
+      if (dataLamaDateIdx >= 0 && cols[dataLamaDateIdx]) {
+        dateStr = cols[dataLamaDateIdx];
+      } else {
+        // Fallback to yesterday if no date column exists in data lama
+        const activeDateObj = parseIndonesianDate(activeWIBDateStr);
+        activeDateObj.setDate(activeDateObj.getDate() - 1);
+        dateStr = formatIndonesianDate(activeDateObj);
+      }
       
       const disambiguatedName = getDisambiguatedPplName(pplName, pmlName);
       
-      // De-duplicate: If rekap is already assigned to this dateStr (e.g. today has already been pushed),
+      // De-duplicate: If rekap is already assigned to this dateStr (e.g. today has already been pushed to data lama),
       // let the active "rekap" row take precedence and don't duplicate.
       const isDuplicate = table3.some(item => item.pplName === disambiguatedName && item.dateStr === dateStr);
       if (!isDuplicate) {
-        const mempawahTarget = log.target || pplTargetMap.get(disambiguatedName) || total;
+        const mempawahTarget = pplTargetMap.get(disambiguatedName) || total;
         table3.push({
           pmlName,
           pplName: disambiguatedName,
@@ -256,56 +271,6 @@ export function parseNewSheetsData(
           dateStr,
           date: parseIndonesianDate(dateStr)
         });
-      }
-    });
-  } else if (!firebaseLogs) {
-    // Only use data lama if firebaseLogs is undefined (not fetched yet or explicitly omitted)
-    const dataLamaLines = dataLamaCSV.split(/\r?\n/);
-    for (let i = 1; i < dataLamaLines.length; i++) {
-      const line = dataLamaLines[i].trim();
-      if (!line) continue;
-      
-      const rawCols = parseCSVLine(line);
-      const cols = rawCols.map(c => c.replace(/^"|"$/g, '').trim());
-      
-      if (cols.length > Math.max(dataLamaPmlIdx, dataLamaPplIdx) && cols[dataLamaPmlIdx] && cols[dataLamaPmlIdx] !== 'Nama PML' && cols[dataLamaPplIdx] && cols[dataLamaPplIdx] !== 'Nama PPL') {
-        let pmlName = cols[dataLamaPmlIdx];
-        let pplName = cols[dataLamaPplIdx];
-        if (pmlName === '#N/A') pmlName = 'Belum Terpetakan';
-        if (pplName === '#N/A') pplName = 'Belum Terpetakan';
-        
-        const submit = parseInt(cols[dataLamaSubmitIdx], 10) || 0;
-        const draft = parseInt(cols[dataLamaDraftIdx], 10) || 0;
-        const total = parseInt(cols[dataLamaTotalIdx], 10) || 0;
-        
-        let dateStr = '';
-        if (dataLamaDateIdx >= 0 && cols[dataLamaDateIdx]) {
-          dateStr = cols[dataLamaDateIdx];
-        } else {
-          // Fallback to yesterday if no date column exists in data lama
-          const activeDateObj = parseIndonesianDate(activeWIBDateStr);
-          activeDateObj.setDate(activeDateObj.getDate() - 1);
-          dateStr = formatIndonesianDate(activeDateObj);
-        }
-        
-        const disambiguatedName = getDisambiguatedPplName(pplName, pmlName);
-        
-        // De-duplicate: If rekap is already assigned to this dateStr (e.g. today has already been pushed to data lama),
-        // let the active "rekap" row take precedence and don't duplicate.
-        const isDuplicate = table3.some(item => item.pplName === disambiguatedName && item.dateStr === dateStr);
-        if (!isDuplicate) {
-          const mempawahTarget = pplTargetMap.get(disambiguatedName) || total;
-          table3.push({
-            pmlName,
-            pplName: disambiguatedName,
-            submit,
-            draft,
-            total,
-            mempawahTarget,
-            dateStr,
-            date: parseIndonesianDate(dateStr)
-          });
-        }
       }
     }
   }
