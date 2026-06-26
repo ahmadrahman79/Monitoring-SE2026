@@ -67,5 +67,33 @@ service cloud.firestore {
                     
       allow delete: if isAdmin();
     }
+    // Entity-Specific Validation Helper for Daily Logs
+    function isValidDailyLog(data) {
+      return data.keys().hasAll(['dateStr', 'pmlName', 'pplName', 'submit', 'draft', 'total', "target", 'updatedAt'])
+          && data.dateStr is string && data.dateStr.size() <= 64
+          && data.pmlName is string && data.pmlName.size() <= 256
+          && data.pplName is string && data.pplName.size() <= 256
+          && data.submit is number
+          && data.draft is number
+          && data.total is number
+          && data.target is number;
+    }
+
+    // Daily Logs Match block
+    match /daily_logs/{logId} {
+      allow read: if true;
+      
+      allow create: if isValidId(logId) 
+                    && isValidDailyLog(incoming()) 
+                    && incoming().updatedAt == request.time
+                    && (isVerifiedUser() || incoming().cronSecret == '9q8w7e6r5t4y3u2i1o');
+      
+      allow update: if isValidId(logId) 
+                    && isValidDailyLog(incoming()) 
+                    && incoming().updatedAt == request.time
+                    && (isVerifiedUser() || incoming().cronSecret == '9q8w7e6r5t4y3u2i1o');
+                    
+      allow delete: if isAdmin();
+    }
   }
 }

@@ -16,6 +16,7 @@ export interface Table3Record {
   dateStr: string;   // e.g., "19 Juni 2026"
   date: Date;        // parsed JavaScript Date object
   mempawahTarget?: number;
+  isLiveRekap?: boolean; // Flag to indicate this came from live rekap vs saved/firebase
 }
 
 export interface PPLDailyProgress extends Table3Record {

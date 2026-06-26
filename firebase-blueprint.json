@@ -28,12 +28,56 @@
         }
       },
       "required": ["uid", "email", "name", "role", "createdAt"]
+    },
+    "daily_logs": {
+      "title": "Daily Snapshot Log",
+      "description": "Daily snapshots of PPL progress taken at 23:59",
+      "type": "object",
+      "properties": {
+        "dateStr": {
+          "type": "string",
+          "description": "Indonesian formatted date string e.g. 25 Juni 2026"
+        },
+        "pmlName": {
+          "type": "string",
+          "description": "Name of the PML"
+        },
+        "pplName": {
+          "type": "string",
+          "description": "Name of the PPL"
+        },
+        "submit": {
+          "type": "number",
+          "description": "Submit count"
+        },
+        "draft": {
+          "type": "number",
+          "description": "Draft count"
+        },
+        "total": {
+          "type": "number",
+          "description": "Total count"
+        },
+        "target": {
+          "type": "number",
+          "description": "Target count"
+        },
+        "updatedAt": {
+          "type": "timestamp",
+          "description": "Server timestamp of when it was saved"
+        }
+      },
+      "required": ["dateStr", "pmlName", "pplName", "submit", "draft", "total", "target", "updatedAt"]
     }
   },
   "firestore": {
     "users/{userId}": {
       "schema": "user_profiles",
       "description": "User profiles of monitoring staff"
+    },
+    "daily_logs/{logId}": {
+      "schema": "daily_logs",
+      "description": "Global collection for daily snapshot logs per PPL"
     }
   }
 }

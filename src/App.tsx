@@ -17,7 +17,10 @@ import {
   LogOut,
   Github,
   Calendar,
-  LineChart as LucideLineChart
+  ChevronUp,
+  ChevronsUpDown,
+  LineChart as LucideLineChart,
+  Save
 } from 'lucide-react';
 import { 
   ResponsiveContainer, 
@@ -32,7 +35,8 @@ import {
   ComposedChart
 } from 'recharts';
 import { motion, AnimatePresence } from 'motion/react';
-import { initAuth, googleSignIn, logout } from './firebase';
+import { collection, onSnapshot, getDocs, setDoc, doc, serverTimestamp, query, orderBy } from 'firebase/firestore';
+import { db, initAuth, googleSignIn, logout, getAccessToken, OperationType, handleFirestoreError } from './firebase';
 import { parseNewSheetsData, convertValuesToCSV } from './parser';
 import { PPLSummary, Table3Record, PPLDailyProgress } from './types';
 import { User } from 'firebase/auth';
@@ -98,23 +102,23 @@ function getWIBTargetDateStr(): string {
   return `${d} ${months[target.getMonth()]} ${y}`;
 }
 
-const FALLBACK_REKAP_CSV = `"Nama PML","Nama PPL","Submit","Draf","Total"
-"Sulis Tri Handayani","Eva Lutfianti","68","22","90"
-"Sulis Tri Handayani","Sri Ratna Dewi","56","0","56"
-"Sulis Tri Handayani","Suci Pratiwi","23","25","48"
-"Sulis Tri Handayani","Laras Nanda Julita","38","1","39"
-"Sulis Tri Handayani","Arie Maulana","19","0","19"
-"Sulis Tri Handayani","Fuulanah Aniskurlillah","17","3","20"
-"Sulis Tri Handayani","Nafisah Ismatul Faizah","11","1","12"
-"Sulis Tri Handayani","Triesna Dinda Saputra","21","22","43"
-"Ridha Nur Mitha","Dwi Febrianti","31","3","34"
-"Ridha Nur Mitha","Bagus Setiawan","29","18","47"
-"Ridha Nur Mitha","Vivi Yatul Islamiah","40","15","55"
-"Ridha Nur Mitha","Rika","35","18","53"
-"Ridha Nur Mitha","Tri Ramadianti","39","36","75"
-"Ridha Nur Mitha","Muhammad Fredi Ramschie, St","50","10","60"
-"Ridha Nur Mitha","Ismail","23","1","24"
-"Ridha Nur Mitha","Ridhawati","16","21","37"`;
+const FALLBACK_REKAP_CSV = `"Nama PML","Nama PPL","Submit","Draf","Total","Target"
+"Sulis Tri Handayani","Eva Lutfianti","68","22","90","450"
+"Sulis Tri Handayani","Sri Ratna Dewi","56","0","56","440"
+"Sulis Tri Handayani","Suci Pratiwi","23","25","48","450"
+"Sulis Tri Handayani","Laras Nanda Julita","38","1","39","400"
+"Sulis Tri Handayani","Arie Maulana","19","0","19","440"
+"Sulis Tri Handayani","Fuulanah Aniskurlillah","17","3","20","440"
+"Sulis Tri Handayani","Nafisah Ismatul Faizah","11","1","12","450"
+"Sulis Tri Handayani","Triesna Dinda Saputra","21","22","43","440"
+"Ridha Nur Mitha","Dwi Febrianti","31","3","34","450"
+"Ridha Nur Mitha","Bagus Setiawan","29","18","47","450"
+"Ridha Nur Mitha","Vivi Yatul Islamiah","40","15","55","440"
+"Ridha Nur Mitha","Rika","35","18","53","440"
+"Ridha Nur Mitha","Tri Ramadianti","39","36","75","450"
+"Ridha Nur Mitha","Muhammad Fredi Ramschie, St","50","10","60","450"
+"Ridha Nur Mitha","Ismail","23","1","24","440"
+"Ridha Nur Mitha","Ridhawati","16","21","37","440"`;
 
 const FALLBACK_DATA_LAMA_CSV = `"Nama PML","Nama PPL","Submit","Draf","Total","Tanggal update"
 "Sulis Tri Handayani","Arie Maulana","13","0","13","19 Juni 2026"
@@ -167,10 +171,36 @@ const FALLBACK_DATA_LAMA_CSV = `"Nama PML","Nama PPL","Submit","Draf","Total","T
 "Ridha Nur Mitha","Vivi Yatul Islamiah","40","15","55","21 Juni 2026"`;
 
 export default function App() {
-  // Authentication states (removed as requested)
-  const user = null;
-  const accessToken = null;
-  const isLoggingIn = false;
+  // Authentication states
+  const [user, setUser] = useState<User | null>(null);
+  const [accessToken, setAccessToken] = useState<string | null>(null);
+  const [isLoggingIn, setIsLoggingIn] = useState<boolean>(false);
+  const [firebaseLogs, setFirebaseLogs] = useState<any[]>([]);
+
+  useEffect(() => {
+    const unsubscribe = initAuth((user, token) => {
+      setUser(user);
+      setAccessToken(token);
+    }, () => {
+      setUser(null);
+      setAccessToken(null);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // Fetch Firebase daily logs
+  useEffect(() => {
+    const q = query(collection(db, 'daily_logs'));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const logs = snapshot.docs.map(doc => doc.data());
+      setFirebaseLogs(logs);
+    }, (error) => {
+      console.error("Firestore read error for daily_logs", error);
+      // We don't call handleFirestoreError here because throwing will crash the app
+    });
+    return () => unsubscribe();
+  }, [user]);
+
 
   // App data states
   const [rekapCSV, setRekapCSV] = useState<string>(FALLBACK_REKAP_CSV);
@@ -195,23 +225,17 @@ export default function App() {
   const [selectedPpl, setSelectedPpl] = useState<string>('ALL');
   const [selectedDate, setSelectedDate] = useState<string>('ALL');
   const [searchQuery, setSearchQuery] = useState<string>('');
-  const [selectedTablePml, setSelectedTablePml] = useState<string>('ALL');
   const [bottomTablePage, setBottomTablePage] = useState<number>(1);
+  const [bottomTableSortConfig, setBottomTableSortConfig] = useState<{ key: string, direction: 'asc' | 'desc' | null }>({ key: '', direction: null });
   const [dailyLogPage, setDailyLogPage] = useState<number>(1);
   const [targetTrackerPpl, setTargetTrackerPpl] = useState<string>('');
   const [localPplFilter, setLocalPplFilter] = useState<string>('');
   const [isTrackerDropdownOpen, setIsTrackerDropdownOpen] = useState<boolean>(false);
   const [trackerSearchInput, setTrackerSearchInput] = useState<string>('');
   const [trackerPage, setTrackerPage] = useState<number>(1);
+  const [trackerItemsPerPage, setTrackerItemsPerPage] = useState<number>(3);
 
   const trackerDropdownRef = useRef<HTMLDivElement>(null);
-
-  // Sync tracker search input when active value updates
-  useEffect(() => {
-    if (targetTrackerPpl) {
-      setTrackerSearchInput(targetTrackerPpl);
-    }
-  }, [targetTrackerPpl]);
 
   // Click outside tracker dropdown to close it
   useEffect(() => {
@@ -239,7 +263,7 @@ export default function App() {
   // Reset page sizes on filter change
   useEffect(() => {
     setBottomTablePage(1);
-  }, [selectedTablePml]);
+  }, [selectedPml]);
 
   useEffect(() => {
     setDailyLogPage(1);
@@ -344,8 +368,10 @@ export default function App() {
   // Parsed combined Sheets (rekap + data lama)
   const parsedData = useMemo(() => {
     const activeWIBDate = getWIBTargetDateStr();
-    return parseNewSheetsData(rekapCSV, dataLamaCSV, activeWIBDate);
-  }, [rekapCSV, dataLamaCSV]);
+    // If we have firebase logs fetched, use them, otherwise pass undefined to fallback to dataLamaCSV
+    const passedFirebaseLogs = firebaseLogs.length > 0 ? firebaseLogs : undefined;
+    return parseNewSheetsData(rekapCSV, dataLamaCSV, activeWIBDate, passedFirebaseLogs);
+  }, [rekapCSV, dataLamaCSV, firebaseLogs]);
 
   // Handle PML filter change
   const handlePmlChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
@@ -380,6 +406,10 @@ export default function App() {
   // Apply selectors (PML, PPL, Date, Search Query) to the calculated daily deltas
   const processedRecords = useMemo(() => {
     let records = [...parsedData.table3Calculated];
+    
+    // As explicitly requested, only show Firebase and historical data in the "Catatan Harian" table.
+    // Filter out the live active rekap rows.
+    records = records.filter(item => !item.isLiveRekap);
 
     // Search query
     if (searchQuery.trim()) {
@@ -632,11 +662,11 @@ export default function App() {
     return totals;
   }, [pmlGroups]);
 
-  // Combine and sort data for the unified bottom table, filtered dynamically by selectedTablePml
+  // Combine and sort data for the unified bottom table, filtered dynamically by selectedPml
   const bottomTableData = useMemo(() => {
     const list: { pmlName: string; pplName: string; submit: number; draft: number; total: number; progress: number; mempawahTarget: number }[] = [];
     (Object.entries(pmlGroups) as [string, { pplName: string; submit: number; draft: number; total: number; progress: number; mempawahTarget: number }[]][]).forEach(([pmlName, ppls]) => {
-      if (selectedTablePml !== 'ALL' && pmlName !== selectedTablePml) {
+      if (selectedPml !== 'ALL' && pmlName !== selectedPml) {
         return;
       }
       ppls.forEach(ppl => {
@@ -646,9 +676,26 @@ export default function App() {
         });
       });
     });
-    // Sort by PML Name, then by PPL Name
-    return list.sort((a, b) => a.pmlName.localeCompare(b.pmlName) || a.pplName.localeCompare(b.pplName));
-  }, [pmlGroups, selectedTablePml]);
+    
+    // Sort logic
+    if (bottomTableSortConfig.key && bottomTableSortConfig.direction) {
+      list.sort((a, b) => {
+        let valA: any = a[bottomTableSortConfig.key as keyof typeof a];
+        let valB: any = b[bottomTableSortConfig.key as keyof typeof b];
+        
+        if (typeof valA === 'string' && typeof valB === 'string') {
+          return bottomTableSortConfig.direction === 'asc' ? valA.localeCompare(valB) : valB.localeCompare(valA);
+        } else if (typeof valA === 'number' && typeof valB === 'number') {
+          return bottomTableSortConfig.direction === 'asc' ? valA - valB : valB - valA;
+        }
+        return 0;
+      });
+    } else {
+      // Default sort by PML Name, then by PPL Name
+      list.sort((a, b) => a.pmlName.localeCompare(b.pmlName) || a.pplName.localeCompare(b.pplName));
+    }
+    return list;
+  }, [pmlGroups, selectedPml, bottomTableSortConfig]);
 
   // Paginated bottom table data
   const paginatedBottomTableData = useMemo(() => {
@@ -735,16 +782,15 @@ export default function App() {
   }, [pplsInActivePml, trackerSearchInput]);
 
   // Paginated active tracker PPLs array
-  const trackerItemsPerPage = 6;
   const paginatedTrackerPpls = useMemo(() => {
     const startIndex = (trackerPage - 1) * trackerItemsPerPage;
     return filteredTrackerPpls.slice(startIndex, startIndex + trackerItemsPerPage);
-  }, [filteredTrackerPpls, trackerPage]);
+  }, [filteredTrackerPpls, trackerPage, trackerItemsPerPage]);
 
   // Total pages count for the active tracker section
   const totalTrackerPages = useMemo(() => {
     return Math.ceil(filteredTrackerPpls.length / trackerItemsPerPage) || 1;
-  }, [filteredTrackerPpls]);
+  }, [filteredTrackerPpls, trackerItemsPerPage]);
 
   // Combined totals for the unified bottom table
   const bottomTableTotals = useMemo(() => {
@@ -824,25 +870,50 @@ export default function App() {
   const leaderboardList = useMemo(() => {
     const ppls: Record<string, { pplName: string; pmlName: string; submits: number; drafts: number; daysCount: number; submitsAvg: number; draftsAvg: number }> = {};
     
-    parsedData.table3Calculated.forEach(rec => {
-      if (selectedDate !== 'ALL' && rec.dateStr !== selectedDate) return;
-      if (selectedPml !== 'ALL' && rec.pmlName !== selectedPml) return;
+    // For selectedDate === 'ALL', we should use the latest total from table3Calculated
+    // For a specific date, we sum up the dailySubmit for that date.
+    if (selectedDate === 'ALL') {
+      // Use the latest record for each PPL to get the absolute total
+      parsedData.table3Calculated.forEach(rec => {
+        if (selectedPml !== 'ALL' && rec.pmlName !== selectedPml) return;
+        
+        if (!ppls[rec.pplName]) {
+          ppls[rec.pplName] = {
+            pplName: rec.pplName,
+            pmlName: rec.pmlName,
+            submits: rec.submit, // Initialize with current record's total submit
+            drafts: rec.draft,
+            daysCount: 1,
+            submitsAvg: 0,
+            draftsAvg: 0
+          };
+        } else {
+          // Since table3Calculated is sorted by date, the last seen record will be the latest
+          ppls[rec.pplName].submits = rec.submit;
+          ppls[rec.pplName].drafts = rec.draft;
+        }
+      });
+    } else {
+      parsedData.table3Calculated.forEach(rec => {
+        if (rec.dateStr !== selectedDate) return;
+        if (selectedPml !== 'ALL' && rec.pmlName !== selectedPml) return;
 
-      if (!ppls[rec.pplName]) {
-        ppls[rec.pplName] = {
-          pplName: rec.pplName,
-          pmlName: rec.pmlName,
-          submits: 0,
-          drafts: 0,
-          daysCount: 0,
-          submitsAvg: 0,
-          draftsAvg: 0
-        };
-      }
-      ppls[rec.pplName].submits += rec.dailySubmit;
-      ppls[rec.pplName].drafts += rec.dailyDraft;
-      ppls[rec.pplName].daysCount += 1;
-    });
+        if (!ppls[rec.pplName]) {
+          ppls[rec.pplName] = {
+            pplName: rec.pplName,
+            pmlName: rec.pmlName,
+            submits: 0,
+            drafts: 0,
+            daysCount: 0,
+            submitsAvg: 0,
+            draftsAvg: 0
+          };
+        }
+        ppls[rec.pplName].submits += rec.dailySubmit;
+        ppls[rec.pplName].drafts += rec.dailyDraft;
+        ppls[rec.pplName].daysCount += 1;
+      });
+    }
 
     const elapsedDays = selectedDate === 'ALL' ? getCurrentDayOfPendataan() : 1;
 
@@ -864,6 +935,83 @@ export default function App() {
   const activeLeaderboard = useMemo(() => {
     return leaderboardTab === 'most' ? leaderboardList.mostProductive : leaderboardList.leastProductive;
   }, [leaderboardList, leaderboardTab]);
+
+  const handleBottomTableSort = (key: string) => {
+    let direction: 'asc' | 'desc' | null = 'desc';
+    if (bottomTableSortConfig.key === key) {
+      if (bottomTableSortConfig.direction === 'desc') {
+        direction = 'asc';
+      } else if (bottomTableSortConfig.direction === 'asc') {
+        direction = null;
+      } else {
+        direction = 'desc';
+      }
+    } else {
+      direction = ['submit', 'draft', 'mempawahTarget', 'progress'].includes(key) ? 'desc' : 'asc';
+    }
+    setBottomTableSortConfig({ key, direction });
+  };
+
+  const renderSortIcon = (columnKey: string) => {
+    if (bottomTableSortConfig.key !== columnKey || !bottomTableSortConfig.direction) return <ChevronsUpDown size={12} className="opacity-30 inline-block ml-1" />;
+    if (bottomTableSortConfig.direction === 'asc') return <ChevronUp size={12} className="text-blue-600 inline-block ml-1" />;
+    return <ChevronDown size={12} className="text-blue-600 inline-block ml-1" />;
+  };
+
+  const handleLogin = async () => {
+    try {
+      setIsLoggingIn(true);
+      await googleSignIn();
+    } catch (err: any) {
+      alert('Login gagal: ' + err.message);
+    } finally {
+      setIsLoggingIn(false);
+    }
+  };
+
+  const handleSaveSnapshotFirebase = async (isAuto = false) => {
+    if (!user) {
+      if (!isAuto) alert("Harap login Google terlebih dahulu untuk menyimpan ke Firebase.");
+      return;
+    }
+    
+    // We get current `table1` from the latest rekap
+    const currentWibDateStr = getWIBTargetDateStr();
+    
+    if (parsedData.table1.length === 0) {
+      if (!isAuto) alert("Belum ada data rekap yang bisa disimpan.");
+      return;
+    }
+    
+    if (!isAuto && !confirm(`Simpan snapshot rekap saat ini untuk tanggal ${currentWibDateStr} ke Firebase?`)) {
+      return;
+    }
+
+    try {
+      let savedCount = 0;
+      for (const rec of parsedData.table1) {
+        const slug = rec.pplName.replace(/[^a-zA-Z0-9_-]/g, '').toLowerCase();
+        const dateSlug = currentWibDateStr.replace(/[^a-zA-Z0-9_-]/g, '').toLowerCase();
+        const docId = `${slug}_${dateSlug}`;
+        
+        await setDoc(doc(db, 'daily_logs', docId), {
+          dateStr: currentWibDateStr,
+          pmlName: rec.pmlName,
+          pplName: rec.pplName,
+          submit: rec.submit,
+          draft: rec.draft,
+          total: rec.total,
+          target: rec.mempawahTarget || rec.total,
+          updatedAt: serverTimestamp()
+        });
+        savedCount++;
+      }
+      if (!isAuto) alert(`Berhasil menyimpan ${savedCount} snapshot ke Firebase untuk tanggal ${currentWibDateStr}.`);
+    } catch (err: any) {
+      handleFirestoreError(err, OperationType.WRITE, 'daily_logs');
+      if (!isAuto) alert(`Gagal menyimpan snapshot: ${err.message}`);
+    }
+  };
 
   return (
     <div className="flex flex-col min-h-screen bg-slate-50 font-sans text-slate-900">
@@ -889,7 +1037,7 @@ export default function App() {
 
         {/* Dynamic header widgets */}
         <div className="flex flex-wrap items-center gap-2 text-xs self-end sm:self-auto">
-          <div className="flex flex-col items-end mr-2 text-right">
+          <div className="flex flex-col items-end mr-2 text-right hidden sm:flex">
             <span className="text-slate-400 text-[10px] uppercase font-bold">Update Terakhir</span>
             <span className="font-mono font-bold text-slate-700">{lastUpdate}</span>
           </div>
@@ -909,22 +1057,36 @@ export default function App() {
             onClick={() => fetchSheetData(false)}
             disabled={isLiveLoading}
             id="sync-now-btn"
-            className="bg-blue-600 text-white px-3 py-1 rounded text-xs font-semibold hover:bg-blue-700 disabled:opacity-50 transition-colors cursor-pointer flex items-center gap-1"
+            className="bg-blue-600 text-white px-3 py-1.5 rounded text-xs font-semibold hover:bg-blue-700 disabled:opacity-50 transition-colors cursor-pointer flex items-center gap-1"
           >
             <RefreshCw size={12} className={isLiveLoading ? "animate-spin" : ""} />
-            <span>Sync Now</span>
+            <span className="hidden sm:inline">Sync</span>
+          </button>
+          
+          <button 
+            onClick={handleSaveSnapshotFirebase} 
+            className="bg-emerald-600 text-white px-3 py-1.5 rounded text-xs font-bold hover:bg-emerald-700 transition-colors flex items-center gap-1.5 shadow-2xs"
+          >
+            <Save size={12} />
+            <span className="hidden sm:inline">Simpan Snapshot</span>
           </button>
 
-          <a 
-            href="https://github.com/ahmadrahman79/Monitoring-SE2026"
-            target="_blank"
-            rel="noopener noreferrer"
-            id="github-repo-btn"
-            className="bg-slate-800 text-white px-3 py-1.5 rounded text-xs font-semibold hover:bg-slate-900 transition-colors cursor-pointer flex items-center gap-1.5"
-          >
-            <Github size={12} />
-            <span>GitHub Repository</span>
-          </a>
+          {user ? (
+            <button 
+              onClick={() => logout()}
+              className="bg-slate-100 border border-slate-200 text-slate-600 px-3 py-1.5 rounded text-xs font-bold hover:bg-slate-200 transition-colors shadow-2xs"
+            >
+              Logout
+            </button>
+          ) : (
+            <button 
+              onClick={handleLogin}
+              disabled={isLoggingIn}
+              className="bg-blue-50 border border-blue-200 text-blue-600 px-3 py-1.5 rounded text-xs font-bold hover:bg-blue-100 transition-colors shadow-2xs disabled:opacity-50"
+            >
+              {isLoggingIn ? "..." : "Login (Admin)"}
+            </button>
+          )}
 
         </div>
       </header>
@@ -1169,10 +1331,23 @@ export default function App() {
             </div>
             
             <div className="flex flex-wrap items-center gap-2 text-xs">
-              <div className="bg-orange-100 text-orange-950 border border-orange-205 px-2.5 py-1 rounded-md font-sans font-extrabold text-[10px] uppercase">
+              <select
+                value={trackerItemsPerPage}
+                onChange={(e) => {
+                  setTrackerItemsPerPage(parseInt(e.target.value, 10));
+                  setTrackerPage(1);
+                }}
+                className="bg-white hover:bg-slate-50 border border-slate-250 rounded px-2.5 py-1 text-[10px] font-extrabold text-slate-700 outline-hidden focus:border-orange-500 shadow-3xs cursor-pointer"
+              >
+                <option value={3}>Tampilkan: 3 Kartu</option>
+                <option value={6}>Tampilkan: 6 Kartu</option>
+                <option value={9}>Tampilkan: 9 Kartu</option>
+                <option value={12}>Tampilkan: 12 Kartu</option>
+              </select>
+              <div className="bg-orange-100 text-orange-950 border border-orange-205 px-2.5 py-1 rounded-md font-sans font-extrabold text-[10px] uppercase hidden md:block">
                 Filter PML Aktif: <span className="underline">{selectedPml === 'ALL' ? 'Semua Tim' : selectedPml}</span>
               </div>
-              <div className="bg-slate-100 text-slate-750 border border-slate-220 px-2.5 py-1 rounded-md font-sans font-extrabold text-[10px] uppercase">
+              <div className="bg-slate-100 text-slate-750 border border-slate-220 px-2.5 py-1 rounded-md font-sans font-extrabold text-[10px] uppercase hidden sm:block">
                 Total PPL Terpilih: {filteredTrackerPpls.length} / {pplsInActivePml.length} Orang
               </div>
             </div>
@@ -1212,18 +1387,22 @@ export default function App() {
                       </div>
 
                       {/* Stats Breakdowns row */}
-                      <div className="grid grid-cols-3 gap-2 text-center mt-3">
-                        <div className="bg-white p-2 border border-slate-150 shadow-3xs rounded-md">
-                          <div className="text-[7.5px] text-slate-400 uppercase font-black tracking-wider leading-none">Target Buffer</div>
-                          <div className="text-xs font-black text-slate-850 font-mono mt-1.5">{ppl.mempawahTarget}</div>
+                      <div className="grid grid-cols-4 gap-1.5 text-center mt-3">
+                        <div className="bg-white p-1.5 border border-slate-150 shadow-3xs rounded-md min-w-0">
+                          <div className="text-[7.5px] text-slate-400 uppercase font-black tracking-tight leading-none truncate">Target Buffer</div>
+                          <div className="text-xs font-black text-slate-850 font-mono mt-1">{ppl.mempawahTarget}</div>
                         </div>
-                        <div className="bg-white p-2 border border-slate-150 shadow-3xs rounded-md">
-                          <div className="text-[7.5px] text-slate-400 uppercase font-black tracking-wider leading-none">Telah Submit</div>
-                          <div className="text-xs font-black text-emerald-600 font-mono mt-1.5">{ppl.submit}</div>
+                        <div className="bg-white p-1.5 border border-slate-150 shadow-3xs rounded-md min-w-0">
+                          <div className="text-[7.5px] text-slate-400 uppercase font-black tracking-tight leading-none truncate">Telah Submit</div>
+                          <div className="text-xs font-black text-emerald-600 font-mono mt-1">{ppl.submit}</div>
                         </div>
-                        <div className="bg-white p-2 border border-slate-150 shadow-3xs rounded-md">
-                          <div className="text-[7.5px] text-slate-400 uppercase font-black tracking-wider leading-none">Sisa Dokumen</div>
-                          <div className="text-xs font-black text-red-500 font-mono mt-1.5">{ppl.remainingTarget}</div>
+                        <div className="bg-white p-1.5 border border-slate-150 shadow-3xs rounded-md min-w-0">
+                          <div className="text-[7.5px] text-amber-650 uppercase font-bold tracking-tight leading-none truncate">Jumlah Draf</div>
+                          <div className="text-xs font-black text-amber-500 font-mono mt-1">{ppl.draft}</div>
+                        </div>
+                        <div className="bg-white p-1.5 border border-slate-150 shadow-3xs rounded-md min-w-0">
+                          <div className="text-[7.5px] text-slate-400 uppercase font-black tracking-tight leading-none truncate">Sisa Dokumen</div>
+                          <div className="text-xs font-black text-red-500 font-mono mt-1">{ppl.remainingTarget}</div>
                         </div>
                       </div>
                     </div>
@@ -1468,7 +1647,9 @@ export default function App() {
               <span className="w-1.5 h-4 bg-orange-500 rounded-full"></span>
               Detail Per PPL (Real-time Delta)
             </h2>
-            <span className="text-[9px] bg-slate-100 text-slate-600 px-2 py-0.5 rounded-sm font-bold">PPL: {filteredLivePplList.length}/{filteredPplList.length}</span>
+            <div className="flex gap-2">
+              <span className="text-[9px] bg-slate-100 text-slate-600 px-2 py-0.5 rounded-sm font-bold">PPL: {filteredLivePplList.length}/{filteredPplList.length}</span>
+            </div>
           </div>
 
           {/* Real-time search filter for PPL */}
@@ -1525,21 +1706,6 @@ export default function App() {
               </h3>
               <p className="text-[11px] text-slate-500 font-medium">Informasi menyeluruh penyelesaian target untuk seluruh tim lapangan berdasarkan rekap terkini</p>
             </div>
-            
-            <div className="flex items-center gap-2 self-start sm:self-auto shrink-0 bg-white border border-slate-200 rounded px-3 py-1.5 text-xs shadow-3xs">
-              <Filter size={13} className="text-slate-400" />
-              <span className="font-bold text-slate-600">Pilih Supervisor PML:</span>
-              <select 
-                value={selectedTablePml} 
-                onChange={(e) => setSelectedTablePml(e.target.value)}
-                className="font-bold text-slate-800 bg-transparent outline-none cursor-pointer border-none"
-              >
-                <option value="ALL">Semua PML</option>
-                {parsedData.pmlList.map(pml => (
-                  <option key={pml} value={pml}>{pml}</option>
-                ))}
-              </select>
-            </div>
           </div>
           
           <div className="overflow-x-auto">
@@ -1547,12 +1713,27 @@ export default function App() {
               <thead className="bg-slate-50 border-b border-slate-150">
                 <tr className="text-slate-500 uppercase tracking-wider font-extrabold text-[10px]">
                   <th className="p-3 pl-4 text-center w-12">No</th>
-                  <th className="p-3">PML Supervisor</th>
-                  <th className="p-3">Nama PPL</th>
-                  <th className="p-3 text-center">Submit</th>
-                  <th className="p-3 text-center">Draft</th>
-                  <th className="p-3 text-center">Target (Kolom F)</th>
-                  <th className="p-3 text-right pr-6">Progres (%)</th>
+                  <th className="p-3 cursor-pointer hover:bg-slate-100 transition-colors" onClick={() => handleBottomTableSort('pmlName')}>
+                    PML Supervisor {renderSortIcon('pmlName')}
+                  </th>
+                  <th className="p-3 cursor-pointer hover:bg-slate-100 transition-colors" onClick={() => handleBottomTableSort('pplName')}>
+                    Nama PPL {renderSortIcon('pplName')}
+                  </th>
+                  <th className="p-3 text-center cursor-pointer hover:bg-slate-100 transition-colors" onClick={() => handleBottomTableSort('submit')}>
+                    Submit {renderSortIcon('submit')}
+                  </th>
+                  <th className="p-3 text-center cursor-pointer hover:bg-slate-100 transition-colors" onClick={() => handleBottomTableSort('draft')}>
+                    Draft {renderSortIcon('draft')}
+                  </th>
+                  <th className="p-3 text-center cursor-pointer hover:bg-slate-100 transition-colors" onClick={() => handleBottomTableSort('total')}>
+                    Jumlah (Submit + Draf) {renderSortIcon('total')}
+                  </th>
+                  <th className="p-3 text-center cursor-pointer hover:bg-slate-100 transition-colors" onClick={() => handleBottomTableSort('mempawahTarget')}>
+                    Target (Kolom F) {renderSortIcon('mempawahTarget')}
+                  </th>
+                  <th className="p-3 text-right pr-6 cursor-pointer hover:bg-slate-100 transition-colors" onClick={() => handleBottomTableSort('progress')}>
+                    Progres (%) {renderSortIcon('progress')}
+                  </th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 font-mono text-slate-700">
@@ -1564,6 +1745,7 @@ export default function App() {
                       <td className="p-2.5 font-sans font-semibold text-slate-800">{ppl.pplName}</td>
                       <td className="p-2.5 text-center font-bold text-slate-800">{ppl.submit}</td>
                       <td className="p-2.5 text-center text-slate-400">{ppl.draft}</td>
+                      <td className="p-2.5 text-center font-bold text-slate-700">{ppl.total}</td>
                       <td className="p-2.5 text-center">{ppl.mempawahTarget}</td>
                       <td className="p-2.5 text-right pr-6 font-bold text-blue-600">
                         <div className="inline-flex items-center gap-1.5 justify-end w-full">
@@ -1590,10 +1772,11 @@ export default function App() {
                 {bottomTableData.length > 0 && (
                   <tr className="bg-blue-50/40 font-bold border-t border-blue-100">
                     <td colSpan={3} className="p-3 pl-4 font-black font-sans uppercase text-slate-700">
-                      TOTAL {selectedTablePml === 'ALL' ? 'TIM GABUNGAN' : `TIM ${selectedTablePml.toUpperCase()}`}
+                      TOTAL {selectedPml === 'ALL' ? 'TIM GABUNGAN' : `TIM ${selectedPml.toUpperCase()}`}
                     </td>
                     <td className="p-3 text-center font-black text-slate-800">{bottomTableTotals.submit}</td>
                     <td className="p-3 text-center font-black text-slate-400">{bottomTableTotals.draft}</td>
+                    <td className="p-3 text-center font-black text-slate-700">{bottomTableTotals.total}</td>
                     <td className="p-3 text-center text-slate-700 font-black">{bottomTableTotals.mempawahTarget}</td>
                     <td className="p-3 text-right pr-6 font-black text-blue-700 font-sans">
                       <span className="font-extrabold text-blue-700 inline-block px-1.5 py-0.5 rounded bg-blue-100/50">{bottomTableTotals.progress}%</span>
@@ -1644,20 +1827,33 @@ export default function App() {
               <p className="text-[11px] text-slate-500 font-medium">Log aktivitas komparatif per tanggal pengumpulan data</p>
             </div>
             
-            {/* View Table Tab switcher */}
-            <div className="flex bg-slate-200/60 p-0.5 rounded-lg text-xs self-start sm:self-auto shrink-0">
-              <button
-                onClick={() => setTableTab('daily')}
-                className={`px-3 py-1 rounded font-bold transition-all cursor-pointer ${tableTab === 'daily' ? 'bg-white text-blue-600 shadow-2xs' : 'text-slate-500 hover:text-slate-800'}`}
+            <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3">
+              <select
+                value={selectedPpl}
+                onChange={(e) => setSelectedPpl(e.target.value)}
+                className="bg-white border border-slate-300 rounded px-2.5 py-1 text-xs outline-hidden font-medium text-slate-700 cursor-pointer shadow-3xs"
               >
-                Harian (Pasif Delta)
-              </button>
-              <button
-                onClick={() => setTableTab('cumulative')}
-                className={`px-3 py-1 rounded font-bold transition-all cursor-pointer ${tableTab === 'cumulative' ? 'bg-white text-blue-600 shadow-2xs' : 'text-slate-500 hover:text-slate-800'}`}
-              >
-                Kumulatif (Akumulasi)
-              </button>
+                <option value="ALL">Semua PPL</option>
+                {filteredPplList.map(p => (
+                  <option key={p.name} value={p.name}>{p.name}</option>
+                ))}
+              </select>
+              
+              {/* View Table Tab switcher */}
+              <div className="flex bg-slate-200/60 p-0.5 rounded-lg text-xs shrink-0">
+                <button
+                  onClick={() => setTableTab('daily')}
+                  className={`px-3 py-1 rounded font-bold transition-all cursor-pointer ${tableTab === 'daily' ? 'bg-white text-blue-600 shadow-2xs' : 'text-slate-500 hover:text-slate-800'}`}
+                >
+                  Harian (Pasif Delta)
+                </button>
+                <button
+                  onClick={() => setTableTab('cumulative')}
+                  className={`px-3 py-1 rounded font-bold transition-all cursor-pointer ${tableTab === 'cumulative' ? 'bg-white text-blue-600 shadow-2xs' : 'text-slate-500 hover:text-slate-800'}`}
+                >
+                  Kumulatif (Akumulasi)
+                </button>
+              </div>
             </div>
           </div>
 
@@ -1744,7 +1940,7 @@ export default function App() {
                 ) : (
                   <tr>
                     <td colSpan={7} className="text-center p-8 text-slate-400 font-sans">
-                      Tidak ada catatan log progres yang cocok dengan filter penelusuran.
+                      Data belum lengkap. Tidak ada catatan log progres yang cocok dengan filter penelusuran.
                     </td>
                   </tr>
                 )}
